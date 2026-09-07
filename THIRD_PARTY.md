@@ -8,7 +8,7 @@ tip. Initialize the recorded objects with `git submodule update --init --recursi
 | Component | Source and exact commit | License | Use and local changes |
 | --- | --- | --- | --- |
 | SameBoy | <https://github.com/LIJI32/SameBoy> at `213a12ce93d66b105a113debd9396306066a7cfc` | Expat (MIT-style), copyright Lior Halphon and contributors; see `third_party/sameboy/LICENSE` | The adapter compiles the internal `Core` API into DualBoy. SameBoy's proven two-instance behavior in `libretro/libretro.c` is a reference. The submodule is unmodified. |
-| mGBA PR #318 snapshot | <https://github.com/libretro/mgba> at `fa743c965939f091350df094f57e639933bc17e3` | MPL-2.0; see `third_party/mgba/LICENSE` | This is the PR head, not a released mGBA revision. DualBoy links mGBA internal APIs and builds the PR's SIO lockstep source. Adaptation and ownership code lives outside the submodule. |
+| mGBA PR #318 snapshot | <https://github.com/libretro/mgba> at `fa743c965939f091350df094f57e639933bc17e3` | MPL-2.0; see `third_party/mgba/LICENSE` | This is the PR head, not a released mGBA revision. DualBoy links mGBA internal APIs; its adapted copy of the PR's SIO lockstep and all ownership code live under `src/engines/mgba/`. The submodule is unmodified. |
 | Libretro API header | <https://github.com/libretro/libretro-common> at `f0173cc9c0d354c0a97ab4c4d075dc560ccc5988` | MIT notice embedded at the top of `include/libretro.h` (the grant applies to that header, not automatically to other files in the repository) | Only `include/libretro.h` is used as the canonical ABI header. The submodule is unmodified. |
 
 The canonical mGBA upstream, <https://github.com/mgba-emu/mgba>, was separately
