@@ -1,8 +1,8 @@
 # Steam Deck setup
 
-> This procedure has not yet been validated on physical Steam Deck hardware.
-> It describes the Linux x86-64 artifact and current RetroArch/EmuDeck directory
-> conventions; complete the smoke checklist below before relying on saves.
+> The Linux x86-64 core has been installed and launched through RetroArch on a
+> physical Steam Deck. Controller ordering, suspend/resume, long-session save
+> reliability, and broad game compatibility still require the smoke checks below.
 
 ## Build or transfer the core
 

@@ -7,6 +7,8 @@
 #ifndef DUALBOY_MGBA_LOCKSTEP_H
 #define DUALBOY_MGBA_LOCKSTEP_H
 
+#include "mgba_adapter_internal.h"
+
 #include <mgba-util/common.h>
 
 CXX_GUARD_START
@@ -18,7 +20,7 @@ CXX_GUARD_START
 #include <mgba-util/table.h>
 #include <mgba-util/threading.h>
 
-#define DUALBOY_MAX_LOCKSTEP_EVENTS 8
+#define DUALBOY_MAX_LOCKSTEP_EVENTS DUALBOY_MGBA_LOCKSTEP_QUEUE_CAPACITY
 
 enum DualBoyGBASIOLockstepEventType {
 	DUALBOY_SIO_EV_ATTACH,
@@ -44,6 +46,8 @@ struct DualBoyGBASIOLockstepCoordinator {
 
 	int32_t cycle;
 	int32_t nextHardSync;
+	unsigned maxQueueDepth;
+	unsigned droppedEvents;
 
 	uint16_t multiData[4];
 	uint32_t normalData[4];
@@ -69,6 +73,8 @@ struct DualBoyGBASIOLockstepPlayer {
 	int32_t cycleOffset;
 	struct DualBoyGBASIOLockstepEvent* queue;
 	bool dataReceived;
+	unsigned queueDepth;
+	unsigned maxQueueDepth;
 
 	struct DualBoyGBASIOLockstepEvent buffer[DUALBOY_MAX_LOCKSTEP_EVENTS];
 	struct DualBoyGBASIOLockstepEvent* freeList;

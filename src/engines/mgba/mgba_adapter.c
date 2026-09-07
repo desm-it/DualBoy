@@ -9,6 +9,7 @@
  */
 
 #include "../../frontend/engine.h"
+#include "mgba_adapter_internal.h"
 #include "mgba_lockstep.h"
 
 #include <mgba/core/config.h>
@@ -46,9 +47,9 @@
 #define MGBA_MACHINE_STATE_HEADER_SIZE 32U
 #define MGBA_MACHINE_STATE_VERSION 1U
 #define MGBA_LINK_STATE_HEADER_SIZE 32U
-#define MGBA_LINK_STATE_VERSION 1U
+#define MGBA_LINK_STATE_VERSION 2U
 #define MGBA_LINK_STATE_FLAG_ENABLED UINT32_C(1)
-#define MGBA_LOCKSTEP_DRIVER_STATE_SIZE 0x1f0U
+#define MGBA_LOCKSTEP_DRIVER_STATE_SIZE 0xc70U
 #define MGBA_LINK_STATE_CAPACITY \
     (MGBA_LINK_STATE_HEADER_SIZE + \
      (2U * (size_t)MGBA_LOCKSTEP_DRIVER_STATE_SIZE))
@@ -1823,6 +1824,20 @@ static void mgba_destroy_pair(void *opaque_pair)
     free(pair->system_directory);
     pair->system_directory = NULL;
     free(pair);
+}
+
+bool dualboy_mgba_get_lockstep_diagnostics(
+    const void *opaque_pair,
+    struct dualboy_mgba_lockstep_diagnostics *diagnostics)
+{
+    const struct mgba_pair *pair = (const struct mgba_pair *)opaque_pair;
+
+    if (pair == NULL || diagnostics == NULL) {
+        return false;
+    }
+    diagnostics->max_queue_depth = pair->coordinator.maxQueueDepth;
+    diagnostics->dropped_events = pair->coordinator.droppedEvents;
+    return true;
 }
 
 const struct dualboy_engine_ops *dualboy_mgba_engine(void)

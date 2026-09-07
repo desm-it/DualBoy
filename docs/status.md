@@ -4,9 +4,9 @@ Last updated: 2026-09-07.
 
 DualBoy's MVP feature set is implemented. The strict Linux x86-64 release suite,
 native Linux sanitizer suite, exported-symbol check, and install-tree check pass.
-A real RetroArch process and physical Steam Deck remain external validation
-boundaries. This document separates observed results from source-level inventory
-so a build artifact is not mistaken for completed platform validation.
+The core has also been installed and launched by a real RetroArch Flatpak on a
+physical Steam Deck. This document separates those observed results from still
+unverified controller, persistence, suspend/resume, and compatibility boundaries.
 
 ## Verified upstream facts
 
@@ -28,10 +28,10 @@ The final source tree completed the reference container command successfully:
 ```text
 make test-linux-x86_64
 100% tests passed, 0 tests failed out of 8
-Total Test time (real) = 29.00 sec
-sameboy_adapter_unit: 9.96 seconds
-mgba_adapter_unit: 4.64 seconds
-libretro_abi_smoke: 13.93 seconds
+Total Test time (real) = 29.28 sec
+sameboy_adapter_unit: 9.70 seconds
+mgba_adapter_unit: 4.61 seconds
+libretro_abi_smoke: 14.53 seconds
 ```
 
 The eight passing tests were `frontend_unit`, `session_unit`,
@@ -61,7 +61,10 @@ content. Source inspection confirms that the registered tests cover:
   after destroying and recreating both engines;
 - two live mGBA instances using a generated ARM ROM, two-way SIO values, assigned
   player IDs, distinct controls/video/audio/state, dynamic save-type sizes, and a
-  disk SaveRAM round trip after destroying and recreating both engines; and
+  disk SaveRAM round trip after destroying and recreating both engines;
+- a generated GBA startup burst that queues more than 64 alternating RCNT mode
+  changes, reaches the lockstep queue capacity, logs and drops excess events
+  without dereferencing a null free-list entry, and continues running; and
 - dynamic loading of the built Libretro core, ABI/interface registration, normal,
   subsystem, pathless, and M3U content paths, live option changes, paired state,
   SameBoy and GBA execution, and exact 32 KiB generated-ROM GBA saves.
@@ -86,7 +89,7 @@ in a native Linux container on the ARM64 development host:
 ```text
 make asan-linux-native
 100% tests passed, 0 tests failed out of 8
-Total Test time (real) = 25.87 sec
+Total Test time (real) = 24.84 sec
 ```
 
 `make asan-linux-x86_64` was attempted on this ARM64 Docker Desktop host. All
@@ -148,14 +151,35 @@ Source and test inspection show these components in the working tree:
 
 This inventory is not a compatibility statement for retail software.
 
+## Physical Steam Deck finding and mitigation
+
+On 2026-09-07, a physical Steam Deck running RetroArch 1.22.2 loaded DualBoy
+through RomM-Dock. Several GBA titles reached the boot logo and then terminated
+RetroArch with `SIGSEGV`. Systemd coredump stacks consistently ended in
+`_enqueueEvent` from `DualBoyGBASIOLockstepDriverSetMode`; disassembly confirmed
+the release build dereferenced `player->freeList == NULL` after the inherited
+eight-entry PR #318 queue was exhausted.
+
+The queue now contains 64 events. Enqueue operations track and debug-log their
+current/high-water depth, and capacity exhaustion emits an error with source,
+target, type, and timestamps before dropping that event rather than crashing.
+The source-generated RCNT burst regression reaches depth 64 and exercises this
+safe exhaustion path. The incompatible mGBA link-state payload is version 2;
+pre-release paired savestates made with version 1 are intentionally unsupported.
+Battery-save formats are unchanged.
+
+The replacement core has not yet been rerun with the affected commercial games,
+so this is a verified crash-path mitigation, not yet a verified per-game fix. A
+sustained producer/consumer imbalance can now drop link events and potentially
+desynchronize the two emulated machines; queue telemetry should be reviewed if
+that occurs.
+
 ## Unverified runtime boundaries and known MVP limits
 
-- No end-to-end load has been performed in an actual RetroArch process. The
-  `libretro_abi_smoke` executable is a custom `dlopen` frontend harness, not
-  RetroArch itself.
-- No build, install, controller, performance, suspend/resume, or persistence
-  check has been performed on physical Steam Deck hardware.
-- No commercial ROM has been used, and no commercial-game compatibility or
+- Real RetroArch and Steam Deck loading is verified, but controller ordering,
+  performance, suspend/resume, and long-session persistence remain unverified.
+- Commercial games were used only for user-run startup/crash observation. No
+  commercial ROMs are stored in this repository, and no broad compatibility or
   gameplay-completion claim is made.
 - SameBoy's subsystem advertises distinct custom SaveRAM and RTC IDs for both
   slots, and the automated harness observes distinct pointers. Actual RetroArch

@@ -24,7 +24,7 @@
 #include <mgba/internal/gba/io.h>
 
 #define DRIVER_ID 0x6B636F4C
-#define DRIVER_STATE_VERSION 1
+#define DRIVER_STATE_VERSION 2
 #define LOCKSTEP_INTERVAL 4096
 #define UNLOCKED_INTERVAL 4096
 #define HARD_SYNC_INTERVAL 0x80000
@@ -35,15 +35,15 @@
 
 DECL_BITFIELD(DualBoyGBASIOLockstepSerializedFlags, uint32_t);
 DECL_BITS(DualBoyGBASIOLockstepSerializedFlags, DriverMode, 0, 3);
-DECL_BITS(DualBoyGBASIOLockstepSerializedFlags, NumEvents, 3, 4);
-DECL_BIT(DualBoyGBASIOLockstepSerializedFlags, Asleep, 7);
-DECL_BIT(DualBoyGBASIOLockstepSerializedFlags, DataReceived, 8);
-DECL_BIT(DualBoyGBASIOLockstepSerializedFlags, EventScheduled, 9);
-DECL_BITS(DualBoyGBASIOLockstepSerializedFlags, Player0Mode, 10, 3);
-DECL_BITS(DualBoyGBASIOLockstepSerializedFlags, Player1Mode, 13, 3);
-DECL_BITS(DualBoyGBASIOLockstepSerializedFlags, Player2Mode, 16, 3);
-DECL_BITS(DualBoyGBASIOLockstepSerializedFlags, Player3Mode, 19, 3);
-DECL_BIT(DualBoyGBASIOLockstepSerializedFlags, SyncArmed, 22);
+DECL_BITS(DualBoyGBASIOLockstepSerializedFlags, NumEvents, 3, 7);
+DECL_BIT(DualBoyGBASIOLockstepSerializedFlags, Asleep, 10);
+DECL_BIT(DualBoyGBASIOLockstepSerializedFlags, DataReceived, 11);
+DECL_BIT(DualBoyGBASIOLockstepSerializedFlags, EventScheduled, 12);
+DECL_BITS(DualBoyGBASIOLockstepSerializedFlags, Player0Mode, 13, 3);
+DECL_BITS(DualBoyGBASIOLockstepSerializedFlags, Player1Mode, 16, 3);
+DECL_BITS(DualBoyGBASIOLockstepSerializedFlags, Player2Mode, 19, 3);
+DECL_BITS(DualBoyGBASIOLockstepSerializedFlags, Player3Mode, 22, 3);
+DECL_BIT(DualBoyGBASIOLockstepSerializedFlags, SyncArmed, 25);
 DECL_BITS(DualBoyGBASIOLockstepSerializedFlags, TransferMode, 28, 3);
 /* mGBA's generic DECL_BIT macro shifts a signed int. Bit 31 therefore trips
  * UBSan even though the resulting wire bit pattern is intended to be uint32. */
@@ -108,8 +108,8 @@ struct DualBoyGBASIOLockstepSerializedState {
 };
 static_assert(offsetof(struct DualBoyGBASIOLockstepSerializedState, driver) == 0x10, "GBA lockstep savestate driver offset wrong");
 static_assert(offsetof(struct DualBoyGBASIOLockstepSerializedState, player) == 0x30, "GBA lockstep savestate player offset wrong");
-static_assert(offsetof(struct DualBoyGBASIOLockstepSerializedState, coordinator) == 0x1C0, "GBA lockstep savestate coordinator offset wrong");
-static_assert(sizeof(struct DualBoyGBASIOLockstepSerializedState) == 0x1F0, "GBA lockstep savestate struct sized wrong");
+static_assert(offsetof(struct DualBoyGBASIOLockstepSerializedState, coordinator) == 0xC40, "GBA lockstep savestate coordinator offset wrong");
+static_assert(sizeof(struct DualBoyGBASIOLockstepSerializedState) == 0xC70, "GBA lockstep savestate struct sized wrong");
 
 static bool DualBoyGBASIOLockstepDriverInit(struct GBASIODriver* driver);
 static void DualBoyGBASIOLockstepDriverDeinit(struct GBASIODriver* driver);
@@ -140,7 +140,7 @@ static void _advanceCycle(struct DualBoyGBASIOLockstepCoordinator*, struct DualB
 static void _removePlayer(struct DualBoyGBASIOLockstepCoordinator*, struct DualBoyGBASIOLockstepPlayer*);
 static void _reconfigPlayers(struct DualBoyGBASIOLockstepCoordinator*);
 static int32_t _untilNextSync(struct DualBoyGBASIOLockstepCoordinator*, struct DualBoyGBASIOLockstepPlayer*);
-static void _enqueueEvent(struct DualBoyGBASIOLockstepCoordinator*, const struct DualBoyGBASIOLockstepEvent*, uint32_t target);
+static bool _enqueueEvent(struct DualBoyGBASIOLockstepCoordinator*, const struct DualBoyGBASIOLockstepEvent*, uint32_t target);
 static void _setData(struct DualBoyGBASIOLockstepCoordinator*, uint32_t id, struct GBASIO* sio);
 static void _setReady(struct DualBoyGBASIOLockstepCoordinator*, struct DualBoyGBASIOLockstepPlayer* activePlayer, int playerId, enum GBASIOMode mode);
 static void _hardSync(struct DualBoyGBASIOLockstepCoordinator*, struct DualBoyGBASIOLockstepPlayer*);
@@ -428,8 +428,8 @@ bool DualBoyGBASIOLockstepDriverValidateState(
 		return false;
 	}
 	LOAD_32LE(flags, 0, &state->flags);
-	/* Bits 23 through 27 are reserved in version 1. */
-	if ((flags & UINT32_C(0x0F800000)) != 0 ||
+	/* Bits 26 and 27 are reserved in version 2. */
+	if ((flags & UINT32_C(0x0C000000)) != 0 ||
 	    !_serializedModeValid(
 	        DualBoyGBASIOLockstepSerializedFlagsGetDriverMode(flags)) ||
 	    !_serializedModeValid(
@@ -508,7 +508,7 @@ bool DualBoyGBASIOLockstepDriverValidateState(
 		if ((waiting & ~attachedMask) != 0 || (waiting & UINT32_C(1)) != 0) {
 			return false;
 		}
-	} else if ((flags & UINT32_C(0xF0400000)) != 0 ||
+	} else if ((flags & UINT32_C(0xF2000000)) != 0 ||
 	           !_allZero(&state->coordinator, sizeof(state->coordinator))) {
 		return false;
 	}
@@ -579,6 +579,8 @@ static bool DualBoyGBASIOLockstepDriverLoadState(struct GBASIODriver* driver, co
 	player->buffer[DUALBOY_MAX_LOCKSTEP_EVENTS - 1].next = NULL;
 	player->freeList = &player->buffer[0];
 	player->queue = NULL;
+	player->queueDepth = 0;
+	player->maxQueueDepth = 0;
 
 	struct DualBoyGBASIOLockstepEvent** lastEvent = &player->queue;
 	for (i = 0; i < DualBoyGBASIOLockstepSerializedFlagsGetNumEvents(flags) && i < DUALBOY_MAX_LOCKSTEP_EVENTS; ++i) {
@@ -608,6 +610,8 @@ static bool DualBoyGBASIOLockstepDriverLoadState(struct GBASIODriver* driver, co
 		}
 	}
 	*lastEvent = NULL;
+	player->queueDepth = i;
+	player->maxQueueDepth = i;
 
 	if (player->playerId == 0) {
 		LOAD_32LE(coordinator->cycle, 0, &state->coordinator.cycle);
@@ -734,10 +738,11 @@ static void DualBoyGBASIOLockstepDriverSetMode(struct GBASIODriver* driver, enum
 			waitOnPlayers = !coordinator->waiting;
 		}
 		_setReady(coordinator, player, player->playerId, mode);
-		_enqueueEvent(coordinator, &event, TARGET_ALL & ~TARGET(player->playerId));
-		if (waitOnPlayers) {
+		bool queued = _enqueueEvent(coordinator, &event,
+		                           TARGET_ALL & ~TARGET(player->playerId));
+		if (waitOnPlayers && queued) {
 			DualBoyGBASIOLockstepCoordinatorWaitOnPlayers(coordinator, player);
-		} else if (player->playerId == 0) {
+		} else if (player->playerId == 0 && queued) {
 			mLOG(GBA_SIO, DEBUG, "Deferring mode wait while barrier %X is active", coordinator->waiting);
 		}
 	}
@@ -806,7 +811,11 @@ static bool DualBoyGBASIOLockstepDriverStart(struct GBASIODriver* driver) {
 		.timestamp = timestamp,
 		.finishCycle = _cycleAdd(timestamp, GBASIOTransferCycles(player->mode, player->driver->d.p->siocnt, coordinator->nAttached - 1)),
 	};
-	_enqueueEvent(coordinator, &event, TARGET_SECONDARY);
+	if (!_enqueueEvent(coordinator, &event, TARGET_SECONDARY)) {
+		mLOG(GBA_SIO, ERROR,
+		     "Cannot start GBA link transfer because a peer event queue is full");
+		goto out;
+	}
 	coordinator->transferActive = true;
 	if (player->mode == GBA_SIO_MULTI && !coordinator->syncArmed) {
 		coordinator->syncArmed = true;
@@ -1136,21 +1145,42 @@ void _hardSync(struct DualBoyGBASIOLockstepCoordinator* coordinator, struct Dual
 		.playerId = 0,
 		.timestamp = DualBoyGBASIOLockstepTime(player),
 	};
-	_enqueueEvent(coordinator, &event, TARGET_SECONDARY);
-	DualBoyGBASIOLockstepCoordinatorWaitOnPlayers(coordinator, player);
+	if (_enqueueEvent(coordinator, &event, TARGET_SECONDARY)) {
+		DualBoyGBASIOLockstepCoordinatorWaitOnPlayers(coordinator, player);
+	} else {
+		mLOG(GBA_SIO, ERROR,
+		     "Skipping hard-sync barrier because a peer event queue is full");
+	}
 }
 
-void _enqueueEvent(struct DualBoyGBASIOLockstepCoordinator* coordinator, const struct DualBoyGBASIOLockstepEvent* event, uint32_t target) {
+bool _enqueueEvent(struct DualBoyGBASIOLockstepCoordinator* coordinator, const struct DualBoyGBASIOLockstepEvent* event, uint32_t target) {
 	mLOG(GBA_SIO, DEBUG, "Enqueuing event of type %X from %i for target %X at timestamp %X",
 	                      event->type, event->playerId, target, event->timestamp);
 
+	bool success = true;
 	int i;
 	for (i = 0; i < coordinator->nAttached; ++i) {
 		if (!(target & TARGET(i))) {
 			continue;
 		}
 		struct DualBoyGBASIOLockstepPlayer* player = TableLookup(&coordinator->players, coordinator->attachedPlayers[i]);
-		mASSERT_LOG(GBA_SIO, player->freeList, "No free events");
+		if (!player) {
+			mLOG(GBA_SIO, ERROR,
+			     "Cannot enqueue event type %X from player %i: target player %i is not attached",
+			     event->type, event->playerId, i);
+			success = false;
+			continue;
+		}
+		if (!player->freeList) {
+			++coordinator->droppedEvents;
+			mLOG(GBA_SIO, ERROR,
+			     "Lockstep event queue exhausted for target player %i: depth=%u capacity=%u event=%X source=%i eventTimestamp=%X targetTime=%X",
+			     player->playerId, player->queueDepth,
+			     (unsigned) DUALBOY_MAX_LOCKSTEP_EVENTS, event->type, event->playerId,
+			     event->timestamp, DualBoyGBASIOLockstepTime(player));
+			success = false;
+			continue;
+		}
 		struct DualBoyGBASIOLockstepEvent* newEvent = player->freeList;
 		player->freeList = newEvent->next;
 
@@ -1167,7 +1197,20 @@ void _enqueueEvent(struct DualBoyGBASIOLockstepCoordinator* coordinator, const s
 		}
 		newEvent->next = next;
 		*previous = newEvent;
+		++player->queueDepth;
+		if (player->queueDepth > player->maxQueueDepth) {
+			player->maxQueueDepth = player->queueDepth;
+			if (player->maxQueueDepth > coordinator->maxQueueDepth) {
+				coordinator->maxQueueDepth = player->maxQueueDepth;
+			}
+			mLOG(GBA_SIO, DEBUG,
+			     "Lockstep event queue high-water for player %i: depth=%u capacity=%u event=%X source=%i timestamp=%X",
+			     player->playerId, player->maxQueueDepth,
+			     (unsigned) DUALBOY_MAX_LOCKSTEP_EVENTS, event->type,
+			     event->playerId, event->timestamp);
+		}
 	}
+	return success;
 }
 
 void _lockstepEvent(struct mTiming* timing, void* context, uint32_t cyclesLate) {
@@ -1260,6 +1303,13 @@ void _lockstepEvent(struct mTiming* timing, void* context, uint32_t cyclesLate) 
 		}
 		event->next = player->freeList;
 		player->freeList = event;
+		if (player->queueDepth > 0) {
+			--player->queueDepth;
+		} else {
+			mLOG(GBA_SIO, ERROR,
+			     "Lockstep event queue accounting underflow for player %i",
+			     player->playerId);
+		}
 	}
 	if (player->queue) {
 		int32_t queuedDelay = _cycleDelta(player->queue->timestamp, DualBoyGBASIOLockstepTime(player));

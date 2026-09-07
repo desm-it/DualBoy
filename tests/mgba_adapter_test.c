@@ -9,6 +9,7 @@
 
 #include "frontend/engine.h"
 #include "frontend/save_manager.h"
+#include "engines/mgba/mgba_adapter_internal.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -26,6 +27,7 @@
 #define TEST_VRAM_LITERAL 0x30CU
 #define TEST_SEND_PRIMARY_LITERAL 0x310U
 #define TEST_SEND_SECONDARY_LITERAL 0x314U
+#define TEST_GPIO_MODE_LITERAL 0x318U
 #define TEST_SIGNATURE_OFFSET 0x340U
 #define TEST_FRAME_LIMIT 300U
 #define TEST_AUDIO_CAPACITY 20000U
@@ -322,6 +324,51 @@ static bool make_test_rom(uint8_t *rom)
     return true;
 }
 
+/* Build a legal source-generated cartridge that changes RCNT mode repeatedly
+ * before yielding a frame. This reproduces commercial titles that emit a
+ * startup burst of SIO mode changes immediately after the boot logo. */
+static bool make_mode_burst_rom(uint8_t *rom)
+{
+    struct arm_builder builder = {rom, TEST_CODE_OFFSET, true};
+    size_t loop;
+    size_t loop_branch;
+    uint8_t checksum = 0U;
+    size_t index;
+
+    memset(rom, 0, TEST_ROM_SIZE);
+    put_u32le(rom, UINT32_C(0xEA00002E));
+    memcpy(rom + 0x04U, test_gba_logo, sizeof(test_gba_logo));
+    memcpy(rom + 0xA0U, "DUALBOY BURST", 13U);
+    memcpy(rom + 0xACU, "DBMB", 4U);
+    memcpy(rom + 0xB0U, "00", 2U);
+    rom[0xB2U] = 0x96U;
+
+    emit_literal_load(&builder, 4U, TEST_SIO_LITERAL);
+    emit_literal_load(&builder, 3U, TEST_GPIO_MODE_LITERAL);
+    (void)emit_arm(&builder, UINT32_C(0xE3A05028)); /* mov r5, #40 */
+    loop = builder.cursor;
+    (void)emit_arm(&builder, UINT32_C(0xE3A02000)); /* mov r2, #0 */
+    (void)emit_arm(&builder, UINT32_C(0xE1C423B4)); /* strh r2, [r4,#0x34] */
+    (void)emit_arm(&builder, UINT32_C(0xE1C433B4)); /* strh r3, [r4,#0x34] */
+    (void)emit_arm(&builder, UINT32_C(0xE2555001)); /* subs r5, r5, #1 */
+    loop_branch = emit_arm(&builder, 0U);
+    patch_branch(rom, loop_branch, loop, 1U); /* bne mode burst */
+    loop = builder.cursor;
+    loop_branch = emit_arm(&builder, 0U);
+    patch_branch(rom, loop_branch, loop, 14U);
+
+    if (!builder.valid || builder.cursor >= TEST_IO_LITERAL) {
+        return false;
+    }
+    put_u32le(rom + TEST_SIO_LITERAL, UINT32_C(0x04000100));
+    put_u32le(rom + TEST_GPIO_MODE_LITERAL, UINT32_C(0x00008000));
+    for (index = 0xA0U; index <= 0xBCU; ++index) {
+        checksum = (uint8_t)(checksum - rom[index]);
+    }
+    rom[0xBDU] = (uint8_t)(checksum - 0x19U);
+    return true;
+}
+
 static void set_test_rom_game_code(uint8_t *rom, const char game_code[4])
 {
     uint8_t checksum = 0U;
@@ -374,6 +421,48 @@ static bool file_size_is(const char *path, size_t expected)
 
     return stat(path, &status) == 0 && status.st_size >= 0 &&
            (uintmax_t)status.st_size == (uintmax_t)expected;
+}
+
+static bool test_startup_sio_mode_burst_survives_queue_exhaustion(void)
+{
+    const struct dualboy_engine_ops *operations = dualboy_mgba_engine();
+    const struct dualboy_engine_config config = {.audio_sample_rate = 48000U};
+    struct dualboy_rom content = {0};
+    struct dualboy_mgba_lockstep_diagnostics diagnostics = {0};
+    uint8_t *rom = NULL;
+    void *pair = NULL;
+    char error[256] = {0};
+    unsigned index;
+    bool success = false;
+
+    rom = (uint8_t *)malloc(TEST_ROM_SIZE);
+    PERSIST_CHECK(rom != NULL);
+    PERSIST_CHECK(make_mode_burst_rom(rom));
+    PERSIST_CHECK(test_rom_header_is_valid(rom, TEST_ROM_SIZE));
+    content.platform = DUALBOY_PLATFORM_GBA;
+    content.data = rom;
+    content.size = TEST_ROM_SIZE;
+    content.path = "generated-sio-mode-burst.gba";
+
+    PERSIST_CHECK(operations->create_pair(&pair, &config, error, sizeof(error)));
+    PERSIST_CHECK(operations->load_rom(pair, 0U, &content, error, sizeof(error)));
+    PERSIST_CHECK(operations->load_rom(pair, 1U, &content, error, sizeof(error)));
+    PERSIST_CHECK(operations->set_link(pair, true, error, sizeof(error)));
+    for (index = 0U; index < 4U; ++index) {
+        PERSIST_CHECK(operations->run_frame(pair, error, sizeof(error)));
+    }
+    PERSIST_CHECK(dualboy_mgba_get_lockstep_diagnostics(pair, &diagnostics));
+    PERSIST_CHECK(diagnostics.max_queue_depth ==
+                  DUALBOY_MGBA_LOCKSTEP_QUEUE_CAPACITY);
+    PERSIST_CHECK(diagnostics.dropped_events > 0U);
+    success = true;
+
+cleanup:
+    if (pair != NULL) {
+        operations->destroy_pair(pair);
+    }
+    free(rom);
+    return success;
 }
 
 static bool run_linked_pair_case(void)
@@ -699,8 +788,8 @@ static bool run_linked_pair_case(void)
                   TEST_LINK_DRIVER_FLAGS_OFFSET,
               (get_u32le(link_state_again + TEST_LINK_HEADER_SIZE +
                          TEST_LINK_DRIVER_FLAGS_OFFSET) &
-               ~UINT32_C(0x78)) |
-                  (UINT32_C(9) << 3U));
+               ~UINT32_C(0x3F8)) |
+                  (UINT32_C(65) << 3U));
     CHECK(!operations->unserialize_link(pair,
                                         link_state_again,
                                         link_state_used));
@@ -716,7 +805,7 @@ static bool run_linked_pair_case(void)
                   TEST_LINK_DRIVER_FLAGS_OFFSET,
               (get_u32le(link_state_again + TEST_LINK_HEADER_SIZE +
                          TEST_LINK_DRIVER_FLAGS_OFFSET) &
-               ~UINT32_C(0x78)) |
+               ~UINT32_C(0x3F8)) |
                   (UINT32_C(1) << 3U));
     memset(link_state_again + TEST_LINK_HEADER_SIZE +
                TEST_LINK_FIRST_EVENT_OFFSET,
@@ -741,7 +830,7 @@ static bool run_linked_pair_case(void)
                   TEST_LINK_DRIVER_FLAGS_OFFSET,
               (get_u32le(link_state_again + TEST_LINK_HEADER_SIZE +
                          TEST_LINK_DRIVER_FLAGS_OFFSET) &
-               ~UINT32_C(0x78)) |
+               ~UINT32_C(0x3F8)) |
                   (UINT32_C(1) << 3U));
     memset(link_state_again + TEST_LINK_HEADER_SIZE +
                TEST_LINK_FIRST_EVENT_OFFSET,
@@ -1467,6 +1556,7 @@ int main(void)
     if (!test_rejections_and_partial_teardown() ||
         !test_save_type_override_extents() ||
         !test_resolved_flash_state_into_fresh_pair() ||
+        !test_startup_sio_mode_burst_survives_queue_exhaustion() ||
         !run_linked_pair_case() ||
         !test_disk_persistence_round_trip() ||
         !test_rtc_survives_machine_state_restore()) {
