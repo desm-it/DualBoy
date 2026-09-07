@@ -1,0 +1,66 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+#ifndef DUALBOY_SAVE_MANAGER_H
+#define DUALBOY_SAVE_MANAGER_H
+
+#include "frontend/persistence.h"
+#include "frontend/session.h"
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#define DUALBOY_SAVE_FLUSH_INTERVAL_FRAMES 300U
+
+struct dualboy_save_region_tracking {
+    uint64_t hash;
+    size_t size;
+    bool valid;
+};
+
+struct dualboy_save_manager {
+    struct dualboy_save_paths paths;
+    bool core_managed[DUALBOY_MACHINE_COUNT][2];
+    struct dualboy_save_region_tracking tracked[DUALBOY_MACHINE_COUNT][2];
+    uint64_t frames_since_flush;
+    bool initialized;
+};
+
+/*
+ * Selects safe persistence ownership and loads every core-managed region.
+ * SameBoy uses frontend-managed memory where each content slot has a unique
+ * identity. mGBA and M3U use core-managed files because their save storage is
+ * not a stable one-file Libretro memory region.
+ */
+bool dualboy_save_manager_init(struct dualboy_save_manager *manager,
+                               struct dualboy_session *session,
+                               const char *save_directory,
+                               char *error,
+                               size_t error_size);
+
+bool dualboy_save_manager_frontend_memory(
+    const struct dualboy_save_manager *manager,
+    struct dualboy_session *session,
+    unsigned machine,
+    enum dualboy_memory_kind kind,
+    void **data,
+    size_t *size);
+
+/* Flushes changed core-managed regions every five seconds at 60 fps. */
+bool dualboy_save_manager_tick(struct dualboy_save_manager *manager,
+                               struct dualboy_session *session,
+                               char *error,
+                               size_t error_size);
+
+/* A forced flush is intended for clean unload/deinitialization. */
+bool dualboy_save_manager_flush(struct dualboy_save_manager *manager,
+                                struct dualboy_session *session,
+                                bool force,
+                                char *error,
+                                size_t error_size);
+
+void dualboy_save_manager_deinit(struct dualboy_save_manager *manager);
+
+#endif

@@ -114,6 +114,8 @@ struct dualboy_engine_ops {
                          int16_t *interleaved_stereo,
                          size_t max_frames);
 
+    /* Non-empty memory regions remain at a stable address and size until the
+     * pair is destroyed, including across machine-state restores. */
     bool (*memory_info)(void *pair,
                         unsigned machine,
                         enum dualboy_memory_kind kind,
