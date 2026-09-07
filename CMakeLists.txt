@@ -85,6 +85,7 @@ endif()
 
 add_library(dualboy_libretro SHARED
     src/libretro/libretro_core.c
+    src/libretro/options.c
 )
 
 target_include_directories(dualboy_libretro PRIVATE
