@@ -37,7 +37,7 @@ linux-x86_64: linux-image
 	$(DOCKER) run --rm --platform linux/amd64 \
 		-u $$(id -u):$$(id -g) \
 		-v "$(CURDIR):/src" -w /src $(LINUX_IMAGE) \
-		cmake --build $(LINUX_BUILD_DIR)
+		cmake --build $(LINUX_BUILD_DIR) --parallel 2
 
 test-linux-x86_64: linux-x86_64
 	$(DOCKER) run --rm --platform linux/amd64 \
@@ -51,7 +51,7 @@ asan-linux-x86_64: linux-image
 		-v "$(CURDIR):/src" -w /src $(LINUX_IMAGE) \
 		sh -eu -c 'cmake -S . -B build-linux-x86_64-asan -G Ninja \
 		-DCMAKE_BUILD_TYPE=Debug -DDUALBOY_ENABLE_ASAN=ON && \
-		cmake --build build-linux-x86_64-asan && \
+		cmake --build build-linux-x86_64-asan --parallel 2 && \
 		ctest --test-dir build-linux-x86_64-asan --output-on-failure'
 
 symbols-linux-x86_64: linux-x86_64

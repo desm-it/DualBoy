@@ -83,6 +83,51 @@ if(UNIX)
     target_link_libraries(dualboy_sameboy_adapter PUBLIC m)
 endif()
 
+function(dualboy_add_mgba_upstream)
+    set(BINARY_NAME dualboy_mgba_upstream)
+    set(M_CORE_GBA ON)
+    set(M_CORE_GB OFF)
+    set(MINIMAL_CORE ON)
+    set(ENABLE_EXTRA OFF)
+    set(ENABLE_SCRIPTING OFF)
+    add_subdirectory(
+        third_party/mgba
+        ${CMAKE_CURRENT_BINARY_DIR}/third_party/mgba
+        EXCLUDE_FROM_ALL
+    )
+endfunction()
+dualboy_add_mgba_upstream()
+
+target_compile_definitions(dualboy_mgba_upstream PUBLIC
+    M_CORE_GBA
+    MINIMAL_CORE=2
+    DISABLE_THREADING
+    ENABLE_VFS
+)
+
+add_library(dualboy_mgba_adapter STATIC
+    src/engines/mgba/mgba_adapter.c
+    src/engines/mgba/mgba_lockstep.c
+)
+target_include_directories(dualboy_mgba_adapter PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_include_directories(dualboy_mgba_adapter SYSTEM PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/mgba/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/mgba/src
+)
+target_compile_definitions(dualboy_mgba_adapter PRIVATE
+    M_CORE_GBA
+    MINIMAL_CORE=2
+    DISABLE_THREADING
+    ENABLE_DIRECTORIES
+    ENABLE_VFS
+)
+target_link_libraries(dualboy_mgba_adapter PUBLIC dualboy_mgba_upstream)
+if(UNIX)
+    target_link_libraries(dualboy_mgba_adapter PUBLIC m)
+endif()
+
 add_library(dualboy_libretro SHARED
     src/libretro/libretro_core.c
     src/libretro/options.c
@@ -96,6 +141,7 @@ target_include_directories(dualboy_libretro PRIVATE
 target_link_libraries(dualboy_libretro PRIVATE
     dualboy_frontend
     dualboy_sameboy_adapter
+    dualboy_mgba_adapter
 )
 
 target_compile_definitions(dualboy_libretro PRIVATE
@@ -112,10 +158,14 @@ if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(dualboy_sameboy_adapter PRIVATE
         -Wall -Wextra -Wpedantic -Wconversion -Wshadow
     )
+    target_compile_options(dualboy_mgba_adapter PRIVATE
+        -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+    )
     if(DUALBOY_WARNINGS_AS_ERRORS)
         target_compile_options(dualboy_frontend PRIVATE -Werror)
         target_compile_options(dualboy_libretro PRIVATE -Werror)
         target_compile_options(dualboy_sameboy_adapter PRIVATE -Werror)
+        target_compile_options(dualboy_mgba_adapter PRIVATE -Werror)
     endif()
 endif()
 
@@ -208,6 +258,18 @@ if(BUILD_TESTING)
         endif()
     endif()
     add_test(NAME sameboy_adapter_unit COMMAND sameboy_adapter_test)
+
+    add_executable(mgba_adapter_test tests/mgba_adapter_test.c)
+    target_link_libraries(mgba_adapter_test PRIVATE dualboy_mgba_adapter)
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+        target_compile_options(mgba_adapter_test PRIVATE
+            -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+        )
+        if(DUALBOY_WARNINGS_AS_ERRORS)
+            target_compile_options(mgba_adapter_test PRIVATE -Werror)
+        endif()
+    endif()
+    add_test(NAME mgba_adapter_unit COMMAND mgba_adapter_test)
 
     add_executable(libretro_smoke tests/libretro_smoke.c)
     target_include_directories(libretro_smoke PRIVATE
