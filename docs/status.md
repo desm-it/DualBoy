@@ -18,11 +18,15 @@ Last updated: 2026-09-07.
 - The phase-1 artifact at `build-linux-x86_64/dualboy_libretro.so` was identified by
   `file` as `ELF 64-bit LSB shared object, x86-64`. This is only a core-load/ABI
   bootstrap artifact; it does not yet contain emulator integration.
+- Phase 2's engine-neutral ownership ABI, Nintendo-logo/header checksum detector,
+  family compatibility rules, native-pixel compositor, player-only modes, and
+  coupled screen/controller swap are covered by `frontend_unit`. The strict Linux
+  x86-64 build passed 2/2 CTest tests after these additions.
 
 ## In progress
 
-- Phase 2: engine-neutral adapter contract, header-first platform detection,
-  content ownership, options, composition, and unit tests.
+- Phase 3: SameBoy dual-instance adapter, normal same-ROM loading, link stepping,
+  input/video/audio plumbing, and independent persistence.
 
 ## Not yet claimed
 

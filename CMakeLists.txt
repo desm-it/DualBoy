@@ -12,23 +12,39 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+add_library(dualboy_frontend STATIC
+    src/frontend/content.c
+    src/frontend/compositor.c
+)
+
+target_include_directories(dualboy_frontend PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
 add_library(dualboy_libretro SHARED
     src/libretro/libretro_core.c
 )
 
 target_include_directories(dualboy_libretro PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libretro-common/include
 )
+
+target_link_libraries(dualboy_libretro PRIVATE dualboy_frontend)
 
 target_compile_definitions(dualboy_libretro PRIVATE
     DUALBOY_VERSION="${PROJECT_VERSION}"
 )
 
 if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(dualboy_frontend PRIVATE
+        -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+    )
     target_compile_options(dualboy_libretro PRIVATE
         -Wall -Wextra -Wpedantic -Wconversion -Wshadow
     )
     if(DUALBOY_WARNINGS_AS_ERRORS)
+        target_compile_options(dualboy_frontend PRIVATE -Werror)
         target_compile_options(dualboy_libretro PRIVATE -Werror)
     endif()
 endif()
@@ -57,6 +73,16 @@ if(UNIX AND NOT APPLE)
 endif()
 
 if(BUILD_TESTING)
+    add_executable(frontend_test tests/frontend_test.c)
+    target_link_libraries(frontend_test PRIVATE dualboy_frontend)
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+        target_compile_options(frontend_test PRIVATE -Wall -Wextra -Wpedantic)
+        if(DUALBOY_WARNINGS_AS_ERRORS)
+            target_compile_options(frontend_test PRIVATE -Werror)
+        endif()
+    endif()
+    add_test(NAME frontend_unit COMMAND frontend_test)
+
     add_executable(libretro_smoke tests/libretro_smoke.c)
     target_include_directories(libretro_smoke PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libretro-common/include

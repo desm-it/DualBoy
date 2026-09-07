@@ -44,6 +44,6 @@ targets are available.
 - Do not use commercial ROMs. Test content must be generated from source or have
   an explicit redistributable license.
 - `docs/status.md` is the source of truth for verified versus inferred behavior.
-- Current status: phase 1 is committed/buildable; phase 2 frontend and detection
-  work is next. No emulator functionality is claimed until recorded in status with
-  exact test output.
+- Current status: phases 1-2 are buildable; the SameBoy adapter is in progress. No
+  emulator functionality is claimed until recorded in status with exact test
+  output.
