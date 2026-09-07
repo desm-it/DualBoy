@@ -13,10 +13,16 @@
 #include <stdint.h>
 
 #define DUALBOY_SAVE_FLUSH_INTERVAL_FRAMES 300U
+#define DUALBOY_MAX_SAVE_LOCKS (DUALBOY_MACHINE_COUNT * 2U)
 
 struct dualboy_save_region_tracking {
+    uint8_t *baseline;
+    size_t baseline_size;
     uint64_t hash;
     size_t size;
+    size_t loaded_size;
+    size_t preserved_size;
+    bool extent_known;
     bool valid;
 };
 
@@ -25,6 +31,9 @@ struct dualboy_save_manager {
     bool core_managed[DUALBOY_MACHINE_COUNT][2];
     struct dualboy_save_region_tracking tracked[DUALBOY_MACHINE_COUNT][2];
     uint64_t frames_since_flush;
+    int write_lock_fds[DUALBOY_MAX_SAVE_LOCKS];
+    size_t write_lock_count;
+    bool write_owner;
     bool initialized;
 };
 

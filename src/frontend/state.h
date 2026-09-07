@@ -19,6 +19,12 @@
  */
 size_t dualboy_state_size(const struct dualboy_session *session);
 
+enum dualboy_state_restore_result {
+    DUALBOY_STATE_RESTORE_OK = 0,
+    DUALBOY_STATE_RESTORE_REJECTED,
+    DUALBOY_STATE_RESTORE_FATAL,
+};
+
 bool dualboy_state_serialize(struct dualboy_session *session,
                              void *data,
                              size_t size,
@@ -35,5 +41,14 @@ bool dualboy_state_unserialize(struct dualboy_session *session,
                                size_t size,
                                char *error,
                                size_t error_size);
+
+/* The extended result distinguishes a safely rejected/rolled-back state from
+ * an engine rollback failure after live state was already mutated. */
+enum dualboy_state_restore_result
+dualboy_state_unserialize_ex(struct dualboy_session *session,
+                             const void *data,
+                             size_t size,
+                             char *error,
+                             size_t error_size);
 
 #endif

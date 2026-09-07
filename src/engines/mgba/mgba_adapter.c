@@ -68,6 +68,7 @@ struct mgba_machine {
     bool reset_once;
     bool memory_imported;
     bool memory_dirty;
+    bool persistent_restore_failed;
     bool crashed;
     uint8_t *rom_data;
     size_t rom_size;
@@ -105,6 +106,21 @@ struct mgba_pair {
     dualboy_log_fn log;
     void *log_context;
     char *system_directory;
+};
+
+struct mgba_persistent_snapshot {
+    enum GBASavedataType type;
+    uint8_t *save_data;
+    size_t save_size;
+    uint8_t *stable_save_data;
+    size_t stable_save_size;
+    size_t rtc_size;
+    uint8_t rtc_data[sizeof(struct GBASavedataRTCBuffer)];
+    bool memory_dirty;
+    int savedata_dirty;
+    uint32_t dirt_age;
+    bool live_captured;
+    bool captured;
 };
 
 static void clear_error(char *error, size_t error_size)
@@ -366,6 +382,210 @@ static bool import_pair_storage(struct mgba_pair *pair)
     return true;
 }
 
+/* mGBA's native state includes the save-controller type and live RTC fields.
+ * Those are emulation state, but they must not make loading a rewind/runahead
+ * state roll durable battery progress backwards. Preserve the live device and
+ * rehydrate it after every raw machine-state load, including failed loads. */
+static bool snapshot_persistent_storage(
+    struct mgba_machine *machine,
+    struct mgba_persistent_snapshot *snapshot)
+{
+    struct GBASavedata *savedata;
+    void *copy = NULL;
+    size_t size;
+
+    if (snapshot == NULL) {
+        return false;
+    }
+    memset(snapshot, 0, sizeof(*snapshot));
+    if (machine == NULL || !machine->loaded || machine->core == NULL) {
+        return false;
+    }
+    if (machine->memory_imported) {
+        sync_machine_storage(machine, true);
+    }
+    savedata = machine_savedata(machine);
+    if (savedata == NULL) {
+        return false;
+    }
+    snapshot->type = savedata->type;
+    snapshot->rtc_size = machine->rtc_size;
+    snapshot->memory_dirty = machine->memory_dirty;
+    snapshot->savedata_dirty = savedata->dirty;
+    snapshot->dirt_age = savedata->dirtAge;
+    snapshot->captured = true;
+    if (!machine->memory_imported) {
+        return true;
+    }
+
+    size = GBASavedataSize(savedata);
+    snapshot->save_size = machine->core->savedataClone(machine->core, &copy);
+    if (snapshot->save_size != size ||
+        snapshot->save_size > MGBA_MAX_SAVE_SIZE + MGBA_RTC_SIZE ||
+        (snapshot->type != GBA_SAVEDATA_AUTODETECT &&
+         snapshot->save_size > MGBA_MAX_SAVE_SIZE) ||
+        (snapshot->save_size != 0U && copy == NULL)) {
+        free(copy);
+        memset(snapshot, 0, sizeof(*snapshot));
+        return false;
+    }
+    snapshot->save_data = (uint8_t *)copy;
+    if (machine->save_size != 0U) {
+        snapshot->stable_save_data = (uint8_t *)malloc(machine->save_size);
+        if (snapshot->stable_save_data == NULL) {
+            free(snapshot->save_data);
+            memset(snapshot, 0, sizeof(*snapshot));
+            return false;
+        }
+        memcpy(snapshot->stable_save_data,
+               machine->save_data,
+               machine->save_size);
+        snapshot->stable_save_size = machine->save_size;
+    }
+    if (snapshot->rtc_size != 0U) {
+        if (snapshot->rtc_size != MGBA_RTC_SIZE) {
+            free(snapshot->save_data);
+            free(snapshot->stable_save_data);
+            memset(snapshot, 0, sizeof(*snapshot));
+            return false;
+        }
+        memcpy(snapshot->rtc_data, machine->rtc_data, MGBA_RTC_SIZE);
+    }
+    snapshot->live_captured = true;
+    return true;
+}
+
+static enum GBASavedataType merge_savedata_type(
+    enum GBASavedataType current,
+    enum GBASavedataType restored)
+{
+    if (current == GBA_SAVEDATA_AUTODETECT) {
+        return restored;
+    }
+    if (restored == GBA_SAVEDATA_AUTODETECT || current == restored) {
+        return current;
+    }
+    if ((current == GBA_SAVEDATA_FLASH512 ||
+         current == GBA_SAVEDATA_FLASH1M) &&
+        (restored == GBA_SAVEDATA_FLASH512 ||
+         restored == GBA_SAVEDATA_FLASH1M)) {
+        return current == GBA_SAVEDATA_FLASH1M ||
+                       restored == GBA_SAVEDATA_FLASH1M
+                   ? GBA_SAVEDATA_FLASH1M
+                   : GBA_SAVEDATA_FLASH512;
+    }
+    if ((current == GBA_SAVEDATA_EEPROM512 ||
+         current == GBA_SAVEDATA_EEPROM) &&
+        (restored == GBA_SAVEDATA_EEPROM512 ||
+         restored == GBA_SAVEDATA_EEPROM)) {
+        return current == GBA_SAVEDATA_EEPROM ||
+                       restored == GBA_SAVEDATA_EEPROM
+                   ? GBA_SAVEDATA_EEPROM
+                   : GBA_SAVEDATA_EEPROM512;
+    }
+    if ((current == GBA_SAVEDATA_SRAM ||
+         current == GBA_SAVEDATA_SRAM512) &&
+        (restored == GBA_SAVEDATA_SRAM ||
+         restored == GBA_SAVEDATA_SRAM512)) {
+        return current == GBA_SAVEDATA_SRAM512 ||
+                       restored == GBA_SAVEDATA_SRAM512
+                   ? GBA_SAVEDATA_SRAM512
+                   : GBA_SAVEDATA_SRAM;
+    }
+    /* Different resolved families cannot arise in an ordinary same-ROM
+     * session. Keep the current battery authority if a crafted state does. */
+    return current;
+}
+
+static bool restore_persistent_storage(
+    struct mgba_machine *machine,
+    const struct mgba_persistent_snapshot *snapshot)
+{
+    struct GBASavedata *savedata;
+    enum GBASavedataType selected_type;
+    const uint8_t *restore_data;
+    size_t restore_size;
+    size_t offset;
+    bool success = true;
+
+    if (snapshot == NULL || !snapshot->captured) {
+        return true;
+    }
+    savedata = machine_savedata(machine);
+    if (savedata == NULL) {
+        return false;
+    }
+
+    selected_type = merge_savedata_type(snapshot->type, savedata->type);
+    GBASavedataForceType(savedata, selected_type);
+    restore_data = snapshot->save_data;
+    restore_size = snapshot->save_size;
+    if (snapshot->live_captured &&
+        selected_type != GBA_SAVEDATA_AUTODETECT) {
+        const size_t selected_size = GBASavedataSize(savedata);
+
+        if (selected_size > MGBA_MAX_SAVE_SIZE) {
+            success = false;
+        }
+        else if (selected_size != restore_size) {
+            if (selected_size > snapshot->stable_save_size ||
+                (selected_size != 0U &&
+                 snapshot->stable_save_data == NULL)) {
+                success = false;
+            }
+            else {
+                restore_data = snapshot->stable_save_data;
+                restore_size = selected_size;
+            }
+        }
+    }
+    if (snapshot->live_captured && restore_size != 0U && success &&
+        !machine->core->savedataRestore(machine->core,
+                                        restore_data,
+                                        restore_size,
+                                        true)) {
+        success = false;
+    }
+    if (snapshot->live_captured && snapshot->rtc_size != 0U) {
+        if (savedata->gpio == NULL || savedata->vf == NULL ||
+            (savedata->gpio->devices & HW_RTC) == 0U) {
+            success = false;
+        }
+        else {
+            /* Ensure the variable-sized memory VFile has an RTC tail and a
+             * valid mapping before replacing the state-era record. */
+            GBASavedataRTCWrite(savedata);
+            offset = GBASavedataSize(savedata) & ~(size_t)UINT8_MAX;
+            if (savedata->vf->seek(savedata->vf, (off_t)offset, SEEK_SET) < 0 ||
+                savedata->vf->write(savedata->vf,
+                                    snapshot->rtc_data,
+                                    MGBA_RTC_SIZE) != (ssize_t)MGBA_RTC_SIZE) {
+                success = false;
+            }
+            else {
+                GBASavedataRTCRead(savedata);
+            }
+        }
+    }
+
+    machine->rtc_size = snapshot->rtc_size;
+    machine->memory_dirty = snapshot->memory_dirty;
+    savedata->dirty = snapshot->savedata_dirty;
+    savedata->dirtAge = snapshot->dirt_age;
+    sync_machine_storage(machine, false);
+    return success;
+}
+
+static void free_persistent_snapshot(
+    struct mgba_persistent_snapshot *snapshot)
+{
+    if (snapshot != NULL) {
+        free(snapshot->save_data);
+        free(snapshot->stable_save_data);
+        memset(snapshot, 0, sizeof(*snapshot));
+    }
+}
+
 static void savedata_updated(void *context)
 {
     struct mgba_machine *machine = (struct mgba_machine *)context;
@@ -470,6 +690,7 @@ static void destroy_machine(struct mgba_machine *machine)
     machine->reset_once = false;
     machine->memory_imported = false;
     machine->memory_dirty = false;
+    machine->persistent_restore_failed = false;
     machine->crashed = false;
     machine->save_size = 0U;
     machine->rtc_size = 0U;
@@ -563,6 +784,10 @@ static bool attach_link(struct mgba_pair *pair)
         core->setPeripheral(core,
                             mPERIPH_GBA_LINK_PORT,
                             &pair->drivers[index].d);
+        if (pair->drivers[index].lockstepId == 0U) {
+            detach_link(pair);
+            return false;
+        }
     }
     pair->link_enabled = true;
     return true;
@@ -1041,6 +1266,14 @@ static bool mgba_run_frame(void *opaque_pair,
         set_error(error, error_size, "mGBA pair is not fully configured");
         return false;
     }
+    for (index = 0U; index < DUALBOY_MACHINE_COUNT; ++index) {
+        if (pair->machine[index].persistent_restore_failed) {
+            set_error(error,
+                      error_size,
+                      "mGBA persistent-memory recovery failed");
+            return false;
+        }
+    }
     if (!import_pair_storage(pair)) {
         set_error(error, error_size, "Could not import mGBA persistent memory");
         return false;
@@ -1157,14 +1390,99 @@ static bool mgba_memory_info(void *opaque_pair,
     }
 }
 
+static bool mgba_persistent_memory_extent(
+    const void *opaque_pair,
+    unsigned machine_index,
+    enum dualboy_memory_kind kind,
+    bool *known,
+    size_t *size)
+{
+    const struct mgba_pair *pair = (const struct mgba_pair *)opaque_pair;
+    const struct mgba_machine *machine;
+    const struct GBASavedata *savedata;
+    size_t detected_size;
+
+    if (known != NULL) {
+        *known = false;
+    }
+    if (size != NULL) {
+        *size = 0U;
+    }
+    if (pair == NULL || machine_index >= DUALBOY_MACHINE_COUNT ||
+        known == NULL || size == NULL) {
+        return false;
+    }
+    machine = &pair->machine[machine_index];
+    if (!machine->loaded || machine->core == NULL) {
+        return false;
+    }
+
+    switch (kind) {
+        case DUALBOY_MEMORY_SAVE_RAM:
+            savedata = machine_savedata_const(machine);
+            if (savedata == NULL) {
+                return false;
+            }
+            switch (savedata->type) {
+                case GBA_SAVEDATA_AUTODETECT:
+                    /* The stable frontend buffer remains available at its
+                     * maximum capacity, but no disk length is safe yet. */
+                    return true;
+                case GBA_SAVEDATA_FORCE_NONE:
+                case GBA_SAVEDATA_SRAM:
+                case GBA_SAVEDATA_FLASH512:
+                case GBA_SAVEDATA_FLASH1M:
+                case GBA_SAVEDATA_EEPROM:
+                case GBA_SAVEDATA_EEPROM512:
+                case GBA_SAVEDATA_SRAM512:
+                    break;
+                default:
+                    return false;
+            }
+            detected_size = GBASavedataSize(savedata);
+            if (detected_size > MGBA_MAX_SAVE_SIZE) {
+                return false;
+            }
+            *known = true;
+            *size = detected_size;
+            return true;
+        case DUALBOY_MEMORY_RTC:
+            /* Cartridge hardware overrides are not applied until reset. */
+            if (!machine->reset_once) {
+                return true;
+            }
+            if (machine->rtc_size != 0U &&
+                machine->rtc_size != MGBA_RTC_SIZE) {
+                return false;
+            }
+            *known = true;
+            *size = machine->rtc_size;
+            return true;
+        default:
+            return false;
+    }
+}
+
 static bool mgba_memory_dirty(const void *opaque_pair,
                               unsigned machine_index)
 {
     const struct mgba_pair *pair = (const struct mgba_pair *)opaque_pair;
+    const struct mgba_machine *machine;
+    const struct GBASavedata *savedata;
 
-    return pair != NULL && machine_index < DUALBOY_MACHINE_COUNT &&
-           pair->machine[machine_index].loaded &&
-           pair->machine[machine_index].memory_dirty;
+    if (pair == NULL || machine_index >= DUALBOY_MACHINE_COUNT) {
+        return false;
+    }
+    machine = &pair->machine[machine_index];
+    if (!machine->loaded || machine->core == NULL) {
+        return false;
+    }
+    savedata = machine_savedata_const(machine);
+    /* mGBA deliberately waits for a quiet period before firing its savedata
+     * callback. Surface its pending dirty state as well so an early forced
+     * flush cannot miss the first write that also resolves autodetection. */
+    return machine->memory_dirty ||
+           (savedata != NULL && savedata->dirty != 0);
 }
 
 static void mgba_clear_memory_dirty(void *opaque_pair,
@@ -1229,7 +1547,11 @@ static bool mgba_serialize_machine(void *opaque_pair,
         return false;
     }
     raw = (uint8_t *)malloc(raw_size);
-    if (raw == NULL || !machine->core->saveState(machine->core, raw)) {
+    if (raw == NULL) {
+        return false;
+    }
+    memset(raw, 0, raw_size);
+    if (!machine->core->saveState(machine->core, raw)) {
         free(raw);
         return false;
     }
@@ -1263,6 +1585,8 @@ static bool mgba_unserialize_machine(void *opaque_pair,
     size_t raw_size;
     uint32_t rtc_type;
     bool success;
+    bool storage_restored;
+    struct mgba_persistent_snapshot persistent;
 
     if (pair == NULL || machine_index >= DUALBOY_MACHINE_COUNT ||
         data == NULL) {
@@ -1270,6 +1594,7 @@ static bool mgba_unserialize_machine(void *opaque_pair,
     }
     machine = &pair->machine[machine_index];
     if (!machine->loaded || machine->core == NULL ||
+        machine->persistent_restore_failed ||
         size < MGBA_MACHINE_STATE_HEADER_SIZE ||
         bytes[0] != (uint8_t)'D' || bytes[1] != (uint8_t)'B' ||
         bytes[2] != (uint8_t)'G' || bytes[3] != (uint8_t)'M' ||
@@ -1288,14 +1613,25 @@ static bool mgba_unserialize_machine(void *opaque_pair,
     if (rtc_type > (uint32_t)RTC_WALLCLOCK_OFFSET) {
         return false;
     }
+    if (!snapshot_persistent_storage(machine, &persistent)) {
+        return false;
+    }
     raw = (uint8_t *)malloc(raw_size);
     if (raw == NULL) {
+        free_persistent_snapshot(&persistent);
         return false;
     }
     memcpy(raw, bytes + MGBA_MACHINE_STATE_HEADER_SIZE, raw_size);
+    pair->drivers[machine_index].loadingMachineState = true;
     success = machine->core->loadState(machine->core, raw);
+    pair->drivers[machine_index].loadingMachineState = false;
     free(raw);
-    if (!success) {
+    storage_restored = restore_persistent_storage(machine, &persistent);
+    free_persistent_snapshot(&persistent);
+    if (!storage_restored) {
+        machine->persistent_restore_failed = true;
+    }
+    if (!success || !storage_restored) {
         return false;
     }
     encoded_rtc = get_u64_le(bytes + 24U);
@@ -1386,15 +1722,19 @@ static bool mgba_serialize_link(const void *opaque_pair,
     return true;
 }
 
-static bool lockstep_payload_valid(const uint8_t *payload,
+static bool lockstep_payload_valid(const struct mgba_pair *pair,
+                                   const uint8_t *payload,
                                    size_t size,
                                    unsigned player)
 {
-    if (payload == NULL || size != MGBA_LOCKSTEP_DRIVER_STATE_SIZE) {
+    if (pair == NULL || payload == NULL ||
+        player >= DUALBOY_MACHINE_COUNT ||
+        size != MGBA_LOCKSTEP_DRIVER_STATE_SIZE) {
         return false;
     }
-    return get_u32_le(payload) <= 1U &&
-           get_u32_le(payload + 0x30U) == player;
+    return DualBoyGBASIOLockstepDriverValidateState(&pair->drivers[player],
+                                                    payload,
+                                                    size);
 }
 
 static bool mgba_unserialize_link(void *opaque_pair,
@@ -1441,8 +1781,8 @@ static bool mgba_unserialize_link(void *opaque_pair,
         return false;
     }
     payload = bytes + MGBA_LINK_STATE_HEADER_SIZE;
-    if (!lockstep_payload_valid(payload, length0, 0U) ||
-        !lockstep_payload_valid(payload + length0, length1, 1U)) {
+    if (!lockstep_payload_valid(pair, payload, length0, 0U) ||
+        !lockstep_payload_valid(pair, payload + length0, length1, 1U)) {
         return false;
     }
 
@@ -1500,6 +1840,7 @@ const struct dualboy_engine_ops *dualboy_mgba_engine(void)
         .audio_sample_rate = mgba_audio_sample_rate,
         .read_audio = mgba_read_audio,
         .memory_info = mgba_memory_info,
+        .persistent_memory_extent = mgba_persistent_memory_extent,
         .memory_dirty = mgba_memory_dirty,
         .clear_memory_dirty = mgba_clear_memory_dirty,
         .machine_state_size = mgba_machine_state_size,

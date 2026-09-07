@@ -92,6 +92,8 @@ static bool cache_state_capacities(struct dualboy_session *session,
 
     memset(session->machine_state_capacity, 0,
            sizeof(session->machine_state_capacity));
+    memset(session->content_path_missing, 0,
+           sizeof(session->content_path_missing));
     session->link_state_capacity = 0U;
     if (ops->machine_state_size == NULL || ops->serialize_machine == NULL ||
         ops->unserialize_machine == NULL || ops->link_state_size == NULL ||

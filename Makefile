@@ -6,9 +6,12 @@ NINJA ?= ninja
 DOCKER ?= docker
 LINUX_IMAGE ?= dualboy-linux-x86_64:bookworm
 LINUX_BUILD_DIR ?= build-linux-x86_64
+LINUX_NATIVE_IMAGE ?= dualboy-linux-native:bookworm
+LINUX_NATIVE_ASAN_BUILD_DIR ?= build-linux-native-asan
 
 .PHONY: all configure test clean linux-image linux-x86_64 test-linux-x86_64 \
-	asan-linux-x86_64 symbols-linux-x86_64
+	linux-native-image asan-linux-native asan-linux-x86_64 \
+	symbols-linux-x86_64
 
 all: $(BUILD_DIR)/build.ninja
 	$(CMAKE) --build $(BUILD_DIR)
@@ -27,6 +30,10 @@ clean:
 linux-image:
 	$(DOCKER) build --platform linux/amd64 \
 		-t $(LINUX_IMAGE) tools/linux-x86_64
+
+linux-native-image:
+	$(DOCKER) build \
+		-t $(LINUX_NATIVE_IMAGE) tools/linux-x86_64
 
 linux-x86_64: linux-image
 	$(DOCKER) run --rm --platform linux/amd64 \
@@ -53,6 +60,17 @@ asan-linux-x86_64: linux-image
 		-DCMAKE_BUILD_TYPE=Debug -DDUALBOY_ENABLE_ASAN=ON && \
 		cmake --build build-linux-x86_64-asan --parallel 2 && \
 		ctest --test-dir build-linux-x86_64-asan --output-on-failure'
+
+# ASan requires native virtual-address-space semantics. This target is the
+# portable sanitizer gate on hosts where linux/amd64 itself is emulated.
+asan-linux-native: linux-native-image
+	$(DOCKER) run --rm \
+		-u $$(id -u):$$(id -g) \
+		-v "$(CURDIR):/src" -w /src $(LINUX_NATIVE_IMAGE) \
+		sh -eu -c 'cmake -S . -B $(LINUX_NATIVE_ASAN_BUILD_DIR) -G Ninja \
+		-DCMAKE_BUILD_TYPE=Debug -DDUALBOY_ENABLE_ASAN=ON && \
+		cmake --build $(LINUX_NATIVE_ASAN_BUILD_DIR) --parallel 2 && \
+		ctest --test-dir $(LINUX_NATIVE_ASAN_BUILD_DIR) --output-on-failure'
 
 symbols-linux-x86_64: linux-x86_64
 	$(DOCKER) run --rm --platform linux/amd64 \

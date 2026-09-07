@@ -26,7 +26,15 @@
 
 struct fake_pair {
     uint8_t sram[2][4];
-    uint8_t rtc[2][2];
+    uint8_t rtc[2][16];
+    bool extent_known[2][2];
+    size_t extent[2][2];
+    bool dirty[2];
+};
+
+struct large_fake_pair {
+    uint8_t sram[2][32U * 1024U];
+    uint8_t rtc[2][16];
 };
 
 static bool fake_memory(void *context,
@@ -64,6 +72,114 @@ static const struct dualboy_engine_ops mgba_ops = {
     .memory_info = fake_memory,
 };
 
+static bool fake_persistent_extent(const void *context,
+                                   unsigned machine,
+                                   enum dualboy_memory_kind kind,
+                                   bool *known,
+                                   size_t *size)
+{
+    const struct fake_pair *pair = context;
+
+    if (known != NULL) {
+        *known = false;
+    }
+    if (size != NULL) {
+        *size = 0U;
+    }
+    if (pair == NULL || machine >= DUALBOY_MACHINE_COUNT ||
+        (unsigned)kind >= 2U || known == NULL || size == NULL) {
+        return false;
+    }
+    *known = pair->extent_known[machine][kind];
+    *size = pair->extent[machine][kind];
+    return true;
+}
+
+static bool fake_memory_dirty(const void *context, unsigned machine)
+{
+    const struct fake_pair *pair = context;
+
+    return pair != NULL && machine < DUALBOY_MACHINE_COUNT &&
+           pair->dirty[machine];
+}
+
+static void fake_clear_memory_dirty(void *context, unsigned machine)
+{
+    struct fake_pair *pair = context;
+
+    if (pair != NULL && machine < DUALBOY_MACHINE_COUNT) {
+        pair->dirty[machine] = false;
+    }
+}
+
+static const struct dualboy_engine_ops dynamic_mgba_ops = {
+    .name = "dynamic fake mGBA",
+    .family = DUALBOY_ENGINE_MGBA,
+    .memory_info = fake_memory,
+    .persistent_memory_extent = fake_persistent_extent,
+    .memory_dirty = fake_memory_dirty,
+    .clear_memory_dirty = fake_clear_memory_dirty,
+};
+
+static bool large_fake_memory(void *context,
+                              unsigned machine,
+                              enum dualboy_memory_kind kind,
+                              void **data,
+                              size_t *size)
+{
+    struct large_fake_pair *pair = context;
+
+    if (pair == NULL || machine >= DUALBOY_MACHINE_COUNT || data == NULL ||
+        size == NULL) {
+        return false;
+    }
+    if (kind == DUALBOY_MEMORY_SAVE_RAM) {
+        *data = pair->sram[machine];
+        *size = sizeof(pair->sram[machine]);
+        return true;
+    }
+    if (kind == DUALBOY_MEMORY_RTC) {
+        *data = pair->rtc[machine];
+        *size = sizeof(pair->rtc[machine]);
+        return true;
+    }
+    return false;
+}
+
+static bool large_fake_extent(const void *context,
+                              unsigned machine,
+                              enum dualboy_memory_kind kind,
+                              bool *known,
+                              size_t *size)
+{
+    if (known != NULL) {
+        *known = false;
+    }
+    if (size != NULL) {
+        *size = 0U;
+    }
+    if (context == NULL || machine >= DUALBOY_MACHINE_COUNT || known == NULL ||
+        size == NULL) {
+        return false;
+    }
+    if (kind == DUALBOY_MEMORY_SAVE_RAM) {
+        return true;
+    }
+    if (kind == DUALBOY_MEMORY_RTC) {
+        *known = true;
+        *size = 16U;
+        return true;
+    }
+    return false;
+}
+
+static const struct dualboy_engine_ops unknown_mgba_ops = {
+    .name = "unknown fake mGBA",
+    .family = DUALBOY_ENGINE_MGBA,
+    .memory_info = large_fake_memory,
+    .persistent_memory_extent = large_fake_extent,
+};
+
 static bool make_temp_directory(char path_template[])
 {
     int descriptor = mkstemp(path_template);
@@ -98,10 +214,53 @@ static bool read_exact(const char *path, uint8_t *data, size_t size)
            actual == size;
 }
 
+static bool file_size_is(const char *path, size_t expected)
+{
+    struct stat status;
+
+    return stat(path, &status) == 0 && status.st_size >= 0 &&
+           (uintmax_t)status.st_size == (uintmax_t)expected;
+}
+
+static void deinit_and_remove_test_locks(struct dualboy_save_manager *manager)
+{
+    char lock_paths[DUALBOY_MAX_SAVE_LOCKS][DUALBOY_PATH_CAPACITY];
+    size_t count = 0U;
+    unsigned machine;
+    unsigned kind;
+
+    if (manager->write_owner) {
+        for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
+            for (kind = 0U; kind < 2U; ++kind) {
+                const char *save_path;
+                int length;
+
+                if (!manager->core_managed[machine][kind]) {
+                    continue;
+                }
+                save_path = kind == DUALBOY_MEMORY_RTC
+                                ? manager->paths.rtc[machine]
+                                : manager->paths.sram[machine];
+                length = snprintf(lock_paths[count], sizeof(lock_paths[count]),
+                                  "%s.dualboy.lock", save_path);
+                if (length > 0 &&
+                    (size_t)length < sizeof(lock_paths[count])) {
+                    ++count;
+                }
+            }
+        }
+    }
+    dualboy_save_manager_deinit(manager);
+    while (count > 0U) {
+        --count;
+        (void)unlink(lock_paths[count]);
+    }
+}
+
 static bool test_same_rom_second_is_core_managed(void)
 {
     char directory[] = "/tmp/dualboy-manager-XXXXXX";
-    struct fake_pair pair = {{{0}}, {{0}}};
+    struct fake_pair pair = {0};
     struct dualboy_session session;
     struct dualboy_save_manager manager;
     uint8_t second_save[4] = {4U, 3U, 2U, 1U};
@@ -128,6 +287,7 @@ static bool test_same_rom_second_is_core_managed(void)
         &manager, &session, 1U, DUALBOY_MEMORY_SAVE_RAM, &memory, &size));
 
     CHECK(unlink(manager.paths.sram[1]) == 0);
+    deinit_and_remove_test_locks(&manager);
     CHECK(rmdir(directory) == 0);
     return true;
 }
@@ -135,7 +295,7 @@ static bool test_same_rom_second_is_core_managed(void)
 static bool test_distinct_subsystem_uses_frontend_memory(void)
 {
     char directory[] = "/tmp/dualboy-manager-XXXXXX";
-    struct fake_pair pair = {{{0}}, {{0}}};
+    struct fake_pair pair = {0};
     struct dualboy_session session;
     struct dualboy_save_manager manager;
     void *memory = NULL;
@@ -154,6 +314,34 @@ static bool test_distinct_subsystem_uses_frontend_memory(void)
     CHECK(dualboy_save_manager_frontend_memory(
         &manager, &session, 1U, DUALBOY_MEMORY_SAVE_RAM, &memory, &size));
     CHECK(memory == pair.sram[1]);
+    deinit_and_remove_test_locks(&manager);
+    CHECK(rmdir(directory) == 0);
+    return true;
+}
+
+static bool test_pathless_content_is_core_managed(void)
+{
+    char directory[] = "/tmp/dualboy-manager-XXXXXX";
+    struct fake_pair pair = {0};
+    struct dualboy_session session;
+    struct dualboy_save_manager manager = {0};
+    void *memory = NULL;
+    size_t size = 0U;
+    char error[256] = {0};
+
+    CHECK(make_temp_directory(directory));
+    fake_session(&session, &pair, &sameboy_ops, DUALBOY_LOAD_NORMAL,
+                 "dualboy-a.gb", "dualboy-a.gb");
+    session.content_path_missing[0] = true;
+    session.content_path_missing[1] = true;
+    CHECK(dualboy_save_manager_init(&manager, &session, directory, error,
+                                    sizeof(error)));
+    CHECK(manager.write_owner);
+    CHECK(manager.core_managed[0][DUALBOY_MEMORY_SAVE_RAM]);
+    CHECK(manager.core_managed[1][DUALBOY_MEMORY_SAVE_RAM]);
+    CHECK(!dualboy_save_manager_frontend_memory(
+        &manager, &session, 0U, DUALBOY_MEMORY_SAVE_RAM, &memory, &size));
+    deinit_and_remove_test_locks(&manager);
     CHECK(rmdir(directory) == 0);
     return true;
 }
@@ -161,7 +349,7 @@ static bool test_distinct_subsystem_uses_frontend_memory(void)
 static bool test_gba_legacy_copy_and_independent_flush(void)
 {
     char directory[] = "/tmp/dualboy-manager-XXXXXX";
-    struct fake_pair pair = {{{0}}, {{0}}};
+    struct fake_pair pair = {0};
     struct dualboy_session session;
     struct dualboy_save_manager manager;
     struct dualboy_save_paths paths;
@@ -202,6 +390,239 @@ static bool test_gba_legacy_copy_and_independent_flush(void)
     CHECK(unlink(manager.paths.sram[1]) == 0);
     CHECK(unlink(manager.paths.rtc[0]) == 0);
     CHECK(unlink(manager.paths.rtc[1]) == 0);
+    deinit_and_remove_test_locks(&manager);
+    CHECK(rmdir(directory) == 0);
+    return true;
+}
+
+static bool test_core_managed_writer_lock(void)
+{
+    char directory[] = "/tmp/dualboy-manager-XXXXXX";
+    struct fake_pair first_pair = {0};
+    struct fake_pair second_pair = {0};
+    struct fake_pair unrelated_pair = {0};
+    struct dualboy_session first_session;
+    struct dualboy_session second_session;
+    struct dualboy_session unrelated_session;
+    struct dualboy_save_manager first = {0};
+    struct dualboy_save_manager second = {0};
+    struct dualboy_save_manager unrelated = {0};
+    uint8_t observed[4] = {0};
+    char written_path[DUALBOY_PATH_CAPACITY] = {0};
+    char error[256] = {0};
+
+    CHECK(make_temp_directory(directory));
+    fake_session(&first_session, &first_pair, &mgba_ops,
+                 DUALBOY_LOAD_NORMAL, "/roms/game.gba", "/roms/game.gba");
+    fake_session(&second_session, &second_pair, &mgba_ops,
+                 DUALBOY_LOAD_NORMAL, "/roms/game.gba", "/roms/game.gba");
+    CHECK(dualboy_save_manager_init(&first, &first_session, directory, error,
+                                    sizeof(error)));
+    CHECK(first.write_owner);
+    CHECK(dualboy_save_manager_init(&second, &second_session, directory, error,
+                                    sizeof(error)));
+    CHECK(!second.write_owner);
+
+    fake_session(&unrelated_session, &unrelated_pair, &mgba_ops,
+                 DUALBOY_LOAD_NORMAL, "/roms/other.gba", "/roms/other.gba");
+    CHECK(dualboy_save_manager_init(&unrelated, &unrelated_session, directory,
+                                    error, sizeof(error)));
+    CHECK(unrelated.write_owner);
+
+    second_pair.sram[0][0] = 0x22U;
+    CHECK(dualboy_save_manager_flush(&second, &second_session, true, error,
+                                     sizeof(error)));
+    CHECK(access(second.paths.sram[0], F_OK) != 0);
+
+    first_pair.sram[0][0] = 0x11U;
+    CHECK(dualboy_save_manager_flush(&first, &first_session, true, error,
+                                     sizeof(error)));
+    CHECK(read_exact(first.paths.sram[0], observed, sizeof(observed)));
+    CHECK(observed[0] == 0x11U);
+    memcpy(written_path, first.paths.sram[0], sizeof(written_path));
+
+    deinit_and_remove_test_locks(&second);
+    deinit_and_remove_test_locks(&unrelated);
+    deinit_and_remove_test_locks(&first);
+    CHECK(unlink(written_path) == 0);
+    CHECK(rmdir(directory) == 0);
+    return true;
+}
+
+static bool test_lock_io_failure_rejects_load(void)
+{
+    char directory[] = "/tmp/dualboy-manager-XXXXXX";
+    struct fake_pair pair = {0};
+    struct dualboy_session session;
+    struct dualboy_save_manager manager = {0};
+    char error[256] = {0};
+
+    CHECK(make_temp_directory(directory));
+    CHECK(rmdir(directory) == 0);
+    fake_session(&session, &pair, &mgba_ops, DUALBOY_LOAD_NORMAL,
+                 "/roms/game.gba", "/roms/game.gba");
+    CHECK(!dualboy_save_manager_init(&manager, &session, directory, error,
+                                     sizeof(error)));
+    CHECK(error[0] != '\0');
+    dualboy_save_manager_deinit(&manager);
+    return true;
+}
+
+static bool test_dynamic_extents_and_legacy_rtc_split(void)
+{
+    char directory[] = "/tmp/dualboy-manager-XXXXXX";
+    struct fake_pair pair = {0};
+    struct dualboy_session session;
+    struct dualboy_save_manager manager = {0};
+    struct dualboy_save_paths paths;
+    char legacy[DUALBOY_PATH_CAPACITY];
+    uint8_t legacy_bytes[18];
+    uint8_t observed[4] = {0};
+    char error[256] = {0};
+    unsigned machine;
+
+    CHECK(make_temp_directory(directory));
+    fake_session(&session, &pair, &dynamic_mgba_ops, DUALBOY_LOAD_NORMAL,
+                 "/roms/dynamic.gba", "/roms/dynamic.gba");
+    for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
+        pair.extent_known[machine][DUALBOY_MEMORY_RTC] = true;
+        pair.extent[machine][DUALBOY_MEMORY_RTC] = 0U;
+    }
+    CHECK(dualboy_save_manager_init(&manager, &session, directory, error,
+                                    sizeof(error)));
+    pair.sram[0][0] = 0x41U;
+    pair.sram[1][0] = 0x52U;
+    for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
+        pair.extent_known[machine][DUALBOY_MEMORY_SAVE_RAM] = true;
+        pair.extent[machine][DUALBOY_MEMORY_SAVE_RAM] = 2U;
+        pair.dirty[machine] = true;
+    }
+    CHECK(dualboy_save_manager_flush(&manager, &session, true, error,
+                                     sizeof(error)));
+    CHECK(file_size_is(manager.paths.sram[0], 2U));
+    CHECK(file_size_is(manager.paths.sram[1], 2U));
+
+    /* A save-state-only capacity promotion must not grow a clean canonical
+     * file. Once the emulated program changes bytes in the new extent, the
+     * normal flush makes that larger device durable. */
+    pair.extent[0][DUALBOY_MEMORY_SAVE_RAM] = 4U;
+    CHECK(dualboy_save_manager_flush(&manager, &session, true, error,
+                                     sizeof(error)));
+    CHECK(file_size_is(manager.paths.sram[0], 2U));
+    pair.sram[0][3] = 0x6EU;
+    pair.dirty[0] = true;
+    CHECK(dualboy_save_manager_flush(&manager, &session, true, error,
+                                     sizeof(error)));
+    CHECK(file_size_is(manager.paths.sram[0], 4U));
+
+    CHECK(dualboy_write_file_atomic(manager.paths.sram[0],
+                                    (const uint8_t[]){1U, 2U, 0xffU, 0xffU},
+                                    4U) == DUALBOY_PERSISTENCE_OK);
+    CHECK(dualboy_write_file_atomic(manager.paths.sram[1],
+                                    (const uint8_t[]){1U, 2U, 3U, 4U},
+                                    4U) == DUALBOY_PERSISTENCE_OK);
+    deinit_and_remove_test_locks(&manager);
+    memset(&pair, 0, sizeof(pair));
+    for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
+        pair.extent_known[machine][DUALBOY_MEMORY_SAVE_RAM] = true;
+        pair.extent[machine][DUALBOY_MEMORY_SAVE_RAM] = 2U;
+        pair.extent_known[machine][DUALBOY_MEMORY_RTC] = true;
+    }
+    CHECK(dualboy_save_manager_init(&manager, &session, directory, error,
+                                    sizeof(error)));
+    CHECK(dualboy_save_manager_flush(&manager, &session, true, error,
+                                     sizeof(error)));
+    CHECK(file_size_is(manager.paths.sram[0], 2U));
+    CHECK(file_size_is(manager.paths.sram[1], 4U));
+    pair.sram[1][0] = 9U;
+    pair.dirty[1] = true;
+    CHECK(dualboy_save_manager_flush(&manager, &session, true, error,
+                                     sizeof(error)));
+    CHECK(read_exact(manager.paths.sram[1], observed, sizeof(observed)));
+    CHECK(observed[0] == 9U && observed[2] == 3U && observed[3] == 4U);
+    CHECK(unlink(manager.paths.sram[0]) == 0);
+    CHECK(unlink(manager.paths.sram[1]) == 0);
+    deinit_and_remove_test_locks(&manager);
+
+    memset(&pair, 0, sizeof(pair));
+    fake_session(&session, &pair, &dynamic_mgba_ops,
+                 DUALBOY_LOAD_SUBSYSTEM, "/roms/rtc-one.gba",
+                 "/roms/rtc-two.gba");
+    for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
+        pair.extent_known[machine][DUALBOY_MEMORY_SAVE_RAM] = true;
+        pair.extent[machine][DUALBOY_MEMORY_SAVE_RAM] = 2U;
+        pair.extent_known[machine][DUALBOY_MEMORY_RTC] = true;
+        pair.extent[machine][DUALBOY_MEMORY_RTC] = 16U;
+    }
+    CHECK(dualboy_build_save_paths(directory, session.roms[0].rom.path,
+                                   session.roms[1].rom.path, &paths) ==
+          DUALBOY_PERSISTENCE_OK);
+    CHECK(dualboy_legacy_sav_path(paths.sram[0], legacy, sizeof(legacy)) ==
+          DUALBOY_PERSISTENCE_OK);
+    legacy_bytes[0] = 0xA1U;
+    legacy_bytes[1] = 0xB2U;
+    for (machine = 0U; machine < 16U; ++machine) {
+        legacy_bytes[machine + 2U] = (uint8_t)(0x20U + machine);
+    }
+    CHECK(dualboy_write_file_atomic(legacy, legacy_bytes,
+                                    sizeof(legacy_bytes)) ==
+          DUALBOY_PERSISTENCE_OK);
+    CHECK(dualboy_save_manager_init(&manager, &session, directory, error,
+                                    sizeof(error)));
+    CHECK(pair.sram[0][0] == 0xA1U && pair.sram[0][1] == 0xB2U);
+    CHECK(memcmp(pair.rtc[0], legacy_bytes + 2U, 16U) == 0);
+    CHECK(file_size_is(manager.paths.sram[0], 2U));
+    CHECK(file_size_is(manager.paths.rtc[0], 16U));
+    CHECK(unlink(legacy) == 0);
+    CHECK(unlink(manager.paths.sram[0]) == 0);
+    CHECK(unlink(manager.paths.rtc[0]) == 0);
+    deinit_and_remove_test_locks(&manager);
+    CHECK(rmdir(directory) == 0);
+    return true;
+}
+
+static bool test_unknown_extent_legacy_rtc_split(void)
+{
+    char directory[] = "/tmp/dualboy-manager-XXXXXX";
+    struct large_fake_pair pair = {0};
+    struct dualboy_session session = {0};
+    struct dualboy_save_manager manager = {0};
+    struct dualboy_save_paths paths;
+    char legacy[DUALBOY_PATH_CAPACITY];
+    uint8_t legacy_bytes[(32U * 1024U) + 16U];
+    char error[256] = {0};
+    size_t index;
+
+    CHECK(make_temp_directory(directory));
+    session.engine = &unknown_mgba_ops;
+    session.pair = &pair;
+    session.loaded = true;
+    session.load_kind = DUALBOY_LOAD_SUBSYSTEM;
+    session.roms[0].rom.path = "/roms/unknown-one.gba";
+    session.roms[1].rom.path = "/roms/unknown-two.gba";
+    CHECK(dualboy_build_save_paths(directory, session.roms[0].rom.path,
+                                   session.roms[1].rom.path, &paths) ==
+          DUALBOY_PERSISTENCE_OK);
+    CHECK(dualboy_legacy_sav_path(paths.sram[0], legacy, sizeof(legacy)) ==
+          DUALBOY_PERSISTENCE_OK);
+    memset(legacy_bytes, 0xff, sizeof(legacy_bytes));
+    legacy_bytes[0] = 0x63U;
+    for (index = 0U; index < 16U; ++index) {
+        legacy_bytes[32U * 1024U + index] = (uint8_t)(0x80U + index);
+    }
+    CHECK(dualboy_write_file_atomic(legacy, legacy_bytes,
+                                    sizeof(legacy_bytes)) ==
+          DUALBOY_PERSISTENCE_OK);
+    CHECK(dualboy_save_manager_init(&manager, &session, directory, error,
+                                    sizeof(error)));
+    CHECK(pair.sram[0][0] == 0x63U);
+    CHECK(memcmp(pair.rtc[0], legacy_bytes + 32U * 1024U, 16U) == 0);
+    CHECK(file_size_is(manager.paths.sram[0], 32U * 1024U));
+    CHECK(file_size_is(manager.paths.rtc[0], 16U));
+    CHECK(unlink(legacy) == 0);
+    CHECK(unlink(manager.paths.sram[0]) == 0);
+    CHECK(unlink(manager.paths.rtc[0]) == 0);
+    deinit_and_remove_test_locks(&manager);
     CHECK(rmdir(directory) == 0);
     return true;
 }
@@ -210,7 +631,12 @@ int main(void)
 {
     if (!test_same_rom_second_is_core_managed() ||
         !test_distinct_subsystem_uses_frontend_memory() ||
-        !test_gba_legacy_copy_and_independent_flush()) {
+        !test_pathless_content_is_core_managed() ||
+        !test_gba_legacy_copy_and_independent_flush() ||
+        !test_core_managed_writer_lock() ||
+        !test_lock_io_failure_rejects_load() ||
+        !test_dynamic_extents_and_legacy_rtc_split() ||
+        !test_unknown_extent_legacy_rtc_split()) {
         return EXIT_FAILURE;
     }
     puts("save manager tests passed");

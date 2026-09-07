@@ -2,13 +2,21 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#if defined(__APPLE__)
+#define _DARWIN_C_SOURCE
+#endif
+#define _POSIX_C_SOURCE 200809L
+
 #include "frontend/engine.h"
+#include "frontend/save_manager.h"
 
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #define TEST_ROM_SIZE 0x8000U
 #define TEST_CODE_OFFSET 0xC0U
@@ -21,6 +29,12 @@
 #define TEST_SIGNATURE_OFFSET 0x340U
 #define TEST_FRAME_LIMIT 300U
 #define TEST_AUDIO_CAPACITY 20000U
+#define TEST_LINK_HEADER_SIZE 32U
+#define TEST_LINK_DRIVER_FLAGS_OFFSET 4U
+#define TEST_LINK_FIRST_EVENT_OFFSET 0x40U
+#define TEST_LINK_EVENT_PLAYER_OFFSET 4U
+#define TEST_LINK_EVENT_FLAGS_OFFSET 8U
+#define TEST_LINK_EVENT_PAYLOAD_OFFSET 0x20U
 
 #define CHECK(expression)                                                       \
     do {                                                                        \
@@ -28,6 +42,15 @@
             fprintf(stderr, "CHECK failed at %s:%d: %s\n", __FILE__, __LINE__, \
                     #expression);                                               \
             return false;                                                       \
+        }                                                                       \
+    } while (false)
+
+#define PERSIST_CHECK(expression)                                               \
+    do {                                                                        \
+        if (!(expression)) {                                                    \
+            fprintf(stderr, "CHECK failed at %s:%d: %s\n", __FILE__, __LINE__, \
+                    #expression);                                               \
+            goto cleanup;                                                       \
         }                                                                       \
     } while (false)
 
@@ -68,6 +91,14 @@ static void put_u32le(uint8_t *destination, uint32_t value)
     destination[1] = (uint8_t)(value >> 8U);
     destination[2] = (uint8_t)(value >> 16U);
     destination[3] = (uint8_t)(value >> 24U);
+}
+
+static uint32_t get_u32le(const uint8_t *source)
+{
+    return (uint32_t)source[0] |
+           ((uint32_t)source[1] << 8U) |
+           ((uint32_t)source[2] << 16U) |
+           ((uint32_t)source[3] << 24U);
 }
 
 static size_t emit_arm(struct arm_builder *builder, uint32_t instruction)
@@ -291,6 +322,18 @@ static bool make_test_rom(uint8_t *rom)
     return true;
 }
 
+static void set_test_rom_game_code(uint8_t *rom, const char game_code[4])
+{
+    uint8_t checksum = 0U;
+    size_t index;
+
+    memcpy(rom + 0xACU, game_code, 4U);
+    for (index = 0xA0U; index <= 0xBCU; ++index) {
+        checksum = (uint8_t)(checksum - rom[index]);
+    }
+    rom[0xBDU] = (uint8_t)(checksum - 0x19U);
+}
+
 static bool test_rom_header_is_valid(const uint8_t *rom, size_t size)
 {
     uint8_t checksum = 0U;
@@ -325,6 +368,14 @@ static uint64_t hash_pixels(const uint32_t *pixels, size_t count)
     return hash;
 }
 
+static bool file_size_is(const char *path, size_t expected)
+{
+    struct stat status;
+
+    return stat(path, &status) == 0 && status.st_size >= 0 &&
+           (uintmax_t)status.st_size == (uintmax_t)expected;
+}
+
 static bool run_linked_pair_case(void)
 {
     const struct dualboy_engine_ops *operations = dualboy_mgba_engine();
@@ -349,15 +400,18 @@ static bool run_linked_pair_case(void)
     size_t used = 0U;
     int16_t *audio = NULL;
     size_t audio_frames;
+    size_t persistent_size = 0U;
     uint64_t replay_video_hash[2] = {0U, 0U};
     char error[256] = {0};
     unsigned index;
     bool exchange_complete = false;
+    bool persistent_known = false;
     bool rtc_present[2];
 
     CHECK(operations != NULL);
     CHECK(operations->family == DUALBOY_ENGINE_MGBA);
     CHECK(strcmp(operations->name, "mGBA") == 0);
+    CHECK(operations->persistent_memory_extent != NULL);
 
     rom = (uint8_t *)malloc(TEST_ROM_SIZE);
     CHECK(rom != NULL);
@@ -375,6 +429,50 @@ static bool run_linked_pair_case(void)
     CHECK(!operations->load_rom(pair, 0U, &content, error, sizeof(error)));
     CHECK(operations->set_link(pair, true, error, sizeof(error)));
 
+    persistent_known = true;
+    persistent_size = 1U;
+    CHECK(!operations->persistent_memory_extent(
+        NULL,
+        0U,
+        DUALBOY_MEMORY_SAVE_RAM,
+        &persistent_known,
+        &persistent_size));
+    CHECK(!persistent_known && persistent_size == 0U);
+    persistent_known = true;
+    persistent_size = 1U;
+    CHECK(!operations->persistent_memory_extent(
+        pair,
+        DUALBOY_MACHINE_COUNT,
+        DUALBOY_MEMORY_SAVE_RAM,
+        &persistent_known,
+        &persistent_size));
+    CHECK(!persistent_known && persistent_size == 0U);
+    persistent_size = 1U;
+    CHECK(!operations->persistent_memory_extent(
+        pair,
+        0U,
+        DUALBOY_MEMORY_SAVE_RAM,
+        NULL,
+        &persistent_size));
+    CHECK(persistent_size == 0U);
+    persistent_known = true;
+    CHECK(!operations->persistent_memory_extent(
+        pair,
+        0U,
+        DUALBOY_MEMORY_SAVE_RAM,
+        &persistent_known,
+        NULL));
+    CHECK(!persistent_known);
+    persistent_known = true;
+    persistent_size = 1U;
+    CHECK(!operations->persistent_memory_extent(
+        pair,
+        0U,
+        (enum dualboy_memory_kind)99,
+        &persistent_known,
+        &persistent_size));
+    CHECK(!persistent_known && persistent_size == 0U);
+
     for (index = 0U; index < 2U; ++index) {
         CHECK(operations->memory_info(pair,
                                       index,
@@ -382,8 +480,17 @@ static bool run_linked_pair_case(void)
                                       &save[index],
                                       &save_size[index]));
         CHECK(save[index] != NULL);
-        CHECK(save_size[index] >= 0x8000U);
+        CHECK(save_size[index] == 0x20000U);
         CHECK(!operations->memory_dirty(pair, index));
+        persistent_known = true;
+        persistent_size = 1U;
+        CHECK(operations->persistent_memory_extent(
+            pair,
+            index,
+            DUALBOY_MEMORY_SAVE_RAM,
+            &persistent_known,
+            &persistent_size));
+        CHECK(!persistent_known && persistent_size == 0U);
 
         CHECK(operations->memory_info(pair,
                                       index,
@@ -408,6 +515,15 @@ static bool run_linked_pair_case(void)
             CHECK(rtc[index] == NULL);
             CHECK(rtc_size[index] == 0U);
         }
+        persistent_known = false;
+        persistent_size = 1U;
+        CHECK(operations->persistent_memory_extent(pair,
+                                                   index,
+                                                   DUALBOY_MEMORY_RTC,
+                                                   &persistent_known,
+                                                   &persistent_size));
+        CHECK(persistent_known);
+        CHECK(persistent_size == rtc_size[index]);
     }
     CHECK(save[0] != save[1]);
     CHECK(save_size[0] == save_size[1]);
@@ -419,6 +535,31 @@ static bool run_linked_pair_case(void)
         CHECK(((const uint8_t *)rtc[0])[0] == 0x31U);
         CHECK(((const uint8_t *)rtc[1])[0] == 0x72U);
     }
+
+    /* Capture a state before the guest's first save write resolves mGBA's
+     * AUTODETECT device. Restoring this state later must not roll the live
+     * battery device back to an unknown extent. */
+    for (index = 0U; index < 2U; ++index) {
+        machine_state_size[index] = operations->machine_state_size(pair, index);
+        CHECK(machine_state_size[index] > 32U);
+        machine_state[index] = (uint8_t *)malloc(machine_state_size[index]);
+        CHECK(machine_state[index] != NULL);
+        CHECK(operations->serialize_machine(pair,
+                                            index,
+                                            machine_state[index],
+                                            machine_state_size[index],
+                                            &used));
+        CHECK(used == machine_state_size[index]);
+    }
+    link_state_capacity = operations->link_state_size(pair);
+    CHECK(link_state_capacity >= 1024U);
+    link_state = (uint8_t *)malloc(link_state_capacity);
+    CHECK(link_state != NULL);
+    CHECK(operations->serialize_link(pair,
+                                     link_state,
+                                     link_state_capacity,
+                                     &link_state_used));
+    CHECK(link_state_used == link_state_capacity);
 
     operations->set_input(pair,
                           0U,
@@ -447,6 +588,32 @@ static bool run_linked_pair_case(void)
     CHECK(((const uint8_t *)save[1])[1] == 0x11U);
     CHECK(((const uint8_t *)save[0])[3] == 0xEEU);
     CHECK(((const uint8_t *)save[1])[3] == 0xDDU);
+
+    for (index = 0U; index < 2U; ++index) {
+        CHECK(operations->unserialize_machine(pair,
+                                              index,
+                                              machine_state[index],
+                                              machine_state_size[index]));
+    }
+    CHECK(operations->unserialize_link(pair, link_state, link_state_used));
+    for (index = 0U; index < 2U; ++index) {
+        CHECK(operations->memory_info(pair,
+                                      index,
+                                      DUALBOY_MEMORY_SAVE_RAM,
+                                      &save[index],
+                                      &save_size[index]));
+        CHECK(((const uint8_t *)save[index])[2] == 0x5AU);
+        persistent_known = false;
+        persistent_size = 0U;
+        CHECK(operations->persistent_memory_extent(
+            pair,
+            index,
+            DUALBOY_MEMORY_SAVE_RAM,
+            &persistent_known,
+            &persistent_size));
+        CHECK(persistent_known && persistent_size == 0x8000U);
+    }
+
     for (index = 0U; index < 2U; ++index) {
         void *save_again = NULL;
         size_t save_size_again = 0U;
@@ -458,6 +625,16 @@ static bool run_linked_pair_case(void)
                                       &save_size_again));
         CHECK(save_again == save[index]);
         CHECK(save_size_again == save_size[index]);
+        persistent_known = false;
+        persistent_size = 0U;
+        CHECK(operations->persistent_memory_extent(
+            pair,
+            index,
+            DUALBOY_MEMORY_SAVE_RAM,
+            &persistent_known,
+            &persistent_size));
+        CHECK(persistent_known);
+        CHECK(persistent_size == 0x8000U);
     }
     CHECK(operations->memory_dirty(pair, 0U));
     CHECK(operations->memory_dirty(pair, 1U));
@@ -491,10 +668,6 @@ static bool run_linked_pair_case(void)
     CHECK(operations->read_audio(pair, audio, TEST_AUDIO_CAPACITY) == 0U);
 
     for (index = 0U; index < 2U; ++index) {
-        machine_state_size[index] = operations->machine_state_size(pair, index);
-        CHECK(machine_state_size[index] > 32U);
-        machine_state[index] = (uint8_t *)malloc(machine_state_size[index]);
-        CHECK(machine_state[index] != NULL);
         CHECK(operations->serialize_machine(pair,
                                             index,
                                             machine_state[index],
@@ -508,11 +681,8 @@ static bool run_linked_pair_case(void)
                                              &used));
     }
 
-    link_state_capacity = operations->link_state_size(pair);
-    CHECK(link_state_capacity >= 1024U);
-    link_state = (uint8_t *)malloc(link_state_capacity);
     link_state_again = (uint8_t *)malloc(link_state_capacity);
-    CHECK(link_state != NULL && link_state_again != NULL);
+    CHECK(link_state_again != NULL);
     CHECK(operations->serialize_link(pair,
                                      link_state,
                                      link_state_capacity,
@@ -521,6 +691,83 @@ static bool run_linked_pair_case(void)
     CHECK(!operations->unserialize_link(pair,
                                         link_state,
                                         link_state_used - 1U));
+
+    /* A structurally corrupt but correctly sized engine payload must be
+     * rejected before either live driver is mutated. */
+    memcpy(link_state_again, link_state, link_state_used);
+    put_u32le(link_state_again + TEST_LINK_HEADER_SIZE +
+                  TEST_LINK_DRIVER_FLAGS_OFFSET,
+              (get_u32le(link_state_again + TEST_LINK_HEADER_SIZE +
+                         TEST_LINK_DRIVER_FLAGS_OFFSET) &
+               ~UINT32_C(0x78)) |
+                  (UINT32_C(9) << 3U));
+    CHECK(!operations->unserialize_link(pair,
+                                        link_state_again,
+                                        link_state_used));
+    CHECK(operations->serialize_link(pair,
+                                     link_state_again,
+                                     link_state_capacity,
+                                     &used));
+    CHECK(used == link_state_used);
+    CHECK(memcmp(link_state_again, link_state, link_state_used) == 0);
+
+    memcpy(link_state_again, link_state, link_state_used);
+    put_u32le(link_state_again + TEST_LINK_HEADER_SIZE +
+                  TEST_LINK_DRIVER_FLAGS_OFFSET,
+              (get_u32le(link_state_again + TEST_LINK_HEADER_SIZE +
+                         TEST_LINK_DRIVER_FLAGS_OFFSET) &
+               ~UINT32_C(0x78)) |
+                  (UINT32_C(1) << 3U));
+    memset(link_state_again + TEST_LINK_HEADER_SIZE +
+               TEST_LINK_FIRST_EVENT_OFFSET,
+           0,
+           0x30U);
+    put_u32le(link_state_again + TEST_LINK_HEADER_SIZE +
+                  TEST_LINK_FIRST_EVENT_OFFSET +
+                  TEST_LINK_EVENT_FLAGS_OFFSET,
+              UINT32_C(7));
+    CHECK(!operations->unserialize_link(pair,
+                                        link_state_again,
+                                        link_state_used));
+    CHECK(operations->serialize_link(pair,
+                                     link_state_again,
+                                     link_state_capacity,
+                                     &used));
+    CHECK(used == link_state_used);
+    CHECK(memcmp(link_state_again, link_state, link_state_used) == 0);
+
+    memcpy(link_state_again, link_state, link_state_used);
+    put_u32le(link_state_again + TEST_LINK_HEADER_SIZE +
+                  TEST_LINK_DRIVER_FLAGS_OFFSET,
+              (get_u32le(link_state_again + TEST_LINK_HEADER_SIZE +
+                         TEST_LINK_DRIVER_FLAGS_OFFSET) &
+               ~UINT32_C(0x78)) |
+                  (UINT32_C(1) << 3U));
+    memset(link_state_again + TEST_LINK_HEADER_SIZE +
+               TEST_LINK_FIRST_EVENT_OFFSET,
+           0,
+           0x30U);
+    put_u32le(link_state_again + TEST_LINK_HEADER_SIZE +
+                  TEST_LINK_FIRST_EVENT_OFFSET +
+                  TEST_LINK_EVENT_PLAYER_OFFSET,
+              UINT32_C(2));
+    put_u32le(link_state_again + TEST_LINK_HEADER_SIZE +
+                  TEST_LINK_FIRST_EVENT_OFFSET +
+                  TEST_LINK_EVENT_FLAGS_OFFSET,
+              UINT32_C(3));
+    put_u32le(link_state_again + TEST_LINK_HEADER_SIZE +
+                  TEST_LINK_FIRST_EVENT_OFFSET +
+                  TEST_LINK_EVENT_PAYLOAD_OFFSET,
+              UINT32_C(2));
+    CHECK(!operations->unserialize_link(pair,
+                                        link_state_again,
+                                        link_state_used));
+    CHECK(operations->serialize_link(pair,
+                                     link_state_again,
+                                     link_state_capacity,
+                                     &used));
+    CHECK(used == link_state_used);
+    CHECK(memcmp(link_state_again, link_state, link_state_used) == 0);
 
     CHECK(operations->run_frame(pair, error, sizeof(error)));
     for (index = 0U; index < 2U; ++index) {
@@ -549,6 +796,23 @@ static bool run_linked_pair_case(void)
                                             machine_state_size[index],
                                             &used));
         CHECK(used == machine_state_size[index]);
+        if (memcmp(machine_state_again,
+                   machine_state[index],
+                   machine_state_size[index]) != 0) {
+            size_t byte;
+
+            for (byte = 0U; byte < machine_state_size[index]; ++byte) {
+                if (machine_state_again[byte] != machine_state[index][byte]) {
+                    fprintf(stderr,
+                            "machine %u state differs at 0x%zx: %02x != %02x\n",
+                            index,
+                            byte,
+                            machine_state_again[byte],
+                            machine_state[index][byte]);
+                    break;
+                }
+            }
+        }
         CHECK(memcmp(machine_state_again,
                      machine_state[index],
                      machine_state_size[index]) == 0);
@@ -627,11 +891,587 @@ static bool test_rejections_and_partial_teardown(void)
     return true;
 }
 
+static bool test_save_type_override_extents(void)
+{
+    static const struct {
+        char game_code[5];
+        size_t save_size;
+        size_t rtc_size;
+    } cases[] = {
+        {"AC8E", 0x2000U, 0U},
+        {"V49E", 0x8000U, 0U},
+        {"BR4J", 0x10000U, 16U},
+        {"BPRE", 0x20000U, 0U},
+        {"AI2E", 0U, 0U},
+    };
+    const struct dualboy_engine_ops *operations = dualboy_mgba_engine();
+    const struct dualboy_engine_config config = {0};
+    struct dualboy_rom content = {0};
+    uint8_t *rom = NULL;
+    void *pair = NULL;
+    char error[128] = {0};
+    bool success = false;
+    size_t case_index;
+    unsigned machine;
+
+    PERSIST_CHECK(operations != NULL);
+    PERSIST_CHECK(operations->persistent_memory_extent != NULL);
+    rom = (uint8_t *)malloc(TEST_ROM_SIZE);
+    PERSIST_CHECK(rom != NULL);
+    content.platform = DUALBOY_PLATFORM_GBA;
+    content.data = rom;
+    content.size = TEST_ROM_SIZE;
+    content.path = "generated-save-override.gba";
+
+    for (case_index = 0U;
+         case_index < sizeof(cases) / sizeof(cases[0]);
+         ++case_index) {
+        PERSIST_CHECK(make_test_rom(rom));
+        set_test_rom_game_code(rom, cases[case_index].game_code);
+        PERSIST_CHECK(test_rom_header_is_valid(rom, TEST_ROM_SIZE));
+        PERSIST_CHECK(operations->create_pair(&pair,
+                                              &config,
+                                              error,
+                                              sizeof(error)));
+        PERSIST_CHECK(operations->load_rom(pair,
+                                           0U,
+                                           &content,
+                                           error,
+                                           sizeof(error)));
+        PERSIST_CHECK(operations->load_rom(pair,
+                                           1U,
+                                           &content,
+                                           error,
+                                           sizeof(error)));
+
+        /* Built-in cartridge overrides are applied by mGBA on reset, so the
+         * extent is deliberately unknown immediately after ROM loading. */
+        for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
+            bool known = true;
+            size_t size = 1U;
+
+            PERSIST_CHECK(operations->persistent_memory_extent(
+                pair,
+                machine,
+                DUALBOY_MEMORY_SAVE_RAM,
+                &known,
+                &size));
+            PERSIST_CHECK(!known && size == 0U);
+        }
+
+        PERSIST_CHECK(operations->set_link(pair,
+                                           false,
+                                           error,
+                                           sizeof(error)));
+        for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
+            void *memory = NULL;
+            size_t capacity = 0U;
+            bool known = false;
+            size_t size = 0U;
+
+            PERSIST_CHECK(operations->memory_info(pair,
+                                                  machine,
+                                                  DUALBOY_MEMORY_SAVE_RAM,
+                                                  &memory,
+                                                  &capacity));
+            PERSIST_CHECK(memory != NULL && capacity == 0x20000U);
+            PERSIST_CHECK(operations->persistent_memory_extent(
+                pair,
+                machine,
+                DUALBOY_MEMORY_SAVE_RAM,
+                &known,
+                &size));
+            PERSIST_CHECK(known && size == cases[case_index].save_size);
+
+            known = false;
+            size = 0U;
+            PERSIST_CHECK(operations->persistent_memory_extent(
+                pair,
+                machine,
+                DUALBOY_MEMORY_RTC,
+                &known,
+                &size));
+            PERSIST_CHECK(known && size == cases[case_index].rtc_size);
+        }
+        operations->destroy_pair(pair);
+        pair = NULL;
+    }
+    success = true;
+
+cleanup:
+    if (pair != NULL) {
+        operations->destroy_pair(pair);
+    }
+    free(rom);
+    return success;
+}
+
+static bool test_resolved_flash_state_into_fresh_pair(void)
+{
+    const struct dualboy_engine_ops *operations = dualboy_mgba_engine();
+    const struct dualboy_engine_config config = {0};
+    struct dualboy_rom content = {0};
+    uint8_t *machine_state = NULL;
+    uint8_t *rom = NULL;
+    void *pair = NULL;
+    void *save = NULL;
+    size_t save_capacity = 0U;
+    size_t machine_state_size;
+    size_t used = 0U;
+    size_t extent = 0U;
+    char error[256] = {0};
+    bool known = false;
+    bool success = false;
+    unsigned machine;
+
+    PERSIST_CHECK(operations != NULL);
+    rom = (uint8_t *)malloc(TEST_ROM_SIZE);
+    PERSIST_CHECK(rom != NULL);
+    PERSIST_CHECK(make_test_rom(rom));
+    /* Redirect the guest's first save write to the Flash command address so
+     * mGBA resolves AUTO to FLASH512 without a database override. */
+    put_u32le(rom + TEST_SRAM_LITERAL, UINT32_C(0x0E005555));
+    PERSIST_CHECK(test_rom_header_is_valid(rom, TEST_ROM_SIZE));
+    content.platform = DUALBOY_PLATFORM_GBA;
+    content.data = rom;
+    content.size = TEST_ROM_SIZE;
+    content.path = "generated-flash-state.gba";
+
+    PERSIST_CHECK(operations->create_pair(&pair, &config, error,
+                                          sizeof(error)));
+    for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
+        PERSIST_CHECK(operations->load_rom(pair, machine, &content, error,
+                                           sizeof(error)));
+    }
+    PERSIST_CHECK(operations->set_link(pair, false, error, sizeof(error)));
+    PERSIST_CHECK(operations->run_frame(pair, error, sizeof(error)));
+    PERSIST_CHECK(operations->persistent_memory_extent(
+        pair, 0U, DUALBOY_MEMORY_SAVE_RAM, &known, &extent));
+    PERSIST_CHECK(known && extent == 0x10000U);
+    machine_state_size = operations->machine_state_size(pair, 0U);
+    PERSIST_CHECK(machine_state_size > 32U);
+    machine_state = (uint8_t *)malloc(machine_state_size);
+    PERSIST_CHECK(machine_state != NULL);
+    PERSIST_CHECK(operations->serialize_machine(pair, 0U, machine_state,
+                                                machine_state_size, &used));
+    PERSIST_CHECK(used == machine_state_size);
+    operations->destroy_pair(pair);
+    pair = NULL;
+
+    PERSIST_CHECK(operations->create_pair(&pair, &config, error,
+                                          sizeof(error)));
+    for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
+        PERSIST_CHECK(operations->load_rom(pair, machine, &content, error,
+                                           sizeof(error)));
+    }
+    PERSIST_CHECK(operations->set_link(pair, false, error, sizeof(error)));
+    PERSIST_CHECK(operations->memory_info(pair, 0U,
+                                          DUALBOY_MEMORY_SAVE_RAM,
+                                          &save, &save_capacity));
+    PERSIST_CHECK(save != NULL && save_capacity == 0x20000U);
+    ((uint8_t *)save)[0x10000U] = 0x7BU;
+    known = true;
+    extent = 1U;
+    PERSIST_CHECK(operations->persistent_memory_extent(
+        pair, 0U, DUALBOY_MEMORY_SAVE_RAM, &known, &extent));
+    PERSIST_CHECK(!known && extent == 0U);
+    PERSIST_CHECK(operations->unserialize_machine(pair, 0U, machine_state,
+                                                  machine_state_size));
+    known = false;
+    extent = 0U;
+    PERSIST_CHECK(operations->persistent_memory_extent(
+        pair, 0U, DUALBOY_MEMORY_SAVE_RAM, &known, &extent));
+    PERSIST_CHECK(known && extent == 0x10000U);
+    PERSIST_CHECK(operations->run_frame(pair, error, sizeof(error)));
+    known = false;
+    extent = 0U;
+    PERSIST_CHECK(operations->persistent_memory_extent(
+        pair, 0U, DUALBOY_MEMORY_SAVE_RAM, &known, &extent));
+    PERSIST_CHECK(known && extent == 0x10000U);
+
+    /* A later state may record a legitimate capacity expansion. The selected
+     * live device grows, but the current save's preserved upper-bank bytes
+     * remain authoritative rather than being replaced with 0xff. */
+    PERSIST_CHECK(machine_state_size > 32U + 0x2E0U);
+    PERSIST_CHECK(machine_state[32U + 0x2E0U] == 2U);
+    machine_state[32U + 0x2E0U] = 3U;
+    PERSIST_CHECK(operations->unserialize_machine(pair, 0U, machine_state,
+                                                  machine_state_size));
+    known = false;
+    extent = 0U;
+    PERSIST_CHECK(operations->persistent_memory_extent(
+        pair, 0U, DUALBOY_MEMORY_SAVE_RAM, &known, &extent));
+    PERSIST_CHECK(known && extent == 0x20000U);
+    PERSIST_CHECK(operations->memory_info(pair, 0U,
+                                          DUALBOY_MEMORY_SAVE_RAM,
+                                          &save, &save_capacity));
+    PERSIST_CHECK(save_capacity == 0x20000U);
+    PERSIST_CHECK(((const uint8_t *)save)[0x10000U] == 0x7BU);
+    success = true;
+
+cleanup:
+    if (pair != NULL) {
+        operations->destroy_pair(pair);
+    }
+    free(machine_state);
+    free(rom);
+    return success;
+}
+
+static void wrap_live_pair(struct dualboy_session *session,
+                           const struct dualboy_engine_ops *operations,
+                           void *pair,
+                           const struct dualboy_rom content[2])
+{
+    unsigned machine;
+
+    memset(session, 0, sizeof(*session));
+    session->engine = operations;
+    session->pair = pair;
+    session->load_kind = DUALBOY_LOAD_PLAYLIST;
+    session->loaded = true;
+    for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
+        session->roms[machine].rom = content[machine];
+    }
+}
+
+static bool test_disk_persistence_round_trip(void)
+{
+    const struct dualboy_engine_ops *operations = dualboy_mgba_engine();
+    const struct dualboy_engine_config config = {
+        .audio_sample_rate = 48000U,
+    };
+    const uint8_t expected_guest[2][4] = {
+        {0xA0U, 0x22U, 0x5AU, 0xEEU},
+        {0xA1U, 0x11U, 0x5AU, 0xDDU},
+    };
+    const uint8_t expected_sentinel[2] = {0x37U, 0xD4U};
+    struct dualboy_rom content[2] = {{0}};
+    struct dualboy_session session = {0};
+    struct dualboy_save_manager manager = {0};
+    uint8_t *rom = NULL;
+    void *pair = NULL;
+    void *sram[2] = {NULL, NULL};
+    size_t sram_size[2] = {0U, 0U};
+    char cleanup_paths[4][DUALBOY_PATH_CAPACITY] = {{0}};
+    char temporary_directory[] = "/tmp/dualboy-mgba-save-XXXXXX";
+    char error[256] = {0};
+    bool directory_created = false;
+    bool guest_wrote_both = false;
+    bool success = false;
+    unsigned machine;
+    unsigned frame;
+
+    rom = (uint8_t *)malloc(TEST_ROM_SIZE);
+    PERSIST_CHECK(rom != NULL);
+    PERSIST_CHECK(make_test_rom(rom));
+    PERSIST_CHECK(test_rom_header_is_valid(rom, TEST_ROM_SIZE));
+    content[0].platform = DUALBOY_PLATFORM_GBA;
+    content[0].data = rom;
+    content[0].size = TEST_ROM_SIZE;
+    content[0].path = "/virtual/left/collision.gba";
+    content[1] = content[0];
+    content[1].path = "/virtual/right/collision.gba";
+
+    PERSIST_CHECK(mkdtemp(temporary_directory) != NULL);
+    directory_created = true;
+    PERSIST_CHECK(operations->create_pair(&pair, &config, error,
+                                          sizeof(error)));
+    PERSIST_CHECK(operations->load_rom(pair, 0U, &content[0], error,
+                                       sizeof(error)));
+    PERSIST_CHECK(operations->load_rom(pair, 1U, &content[1], error,
+                                       sizeof(error)));
+    PERSIST_CHECK(operations->set_link(pair, true, error, sizeof(error)));
+    wrap_live_pair(&session, operations, pair, content);
+
+    PERSIST_CHECK(dualboy_save_manager_init(&manager, &session,
+                                            temporary_directory, error,
+                                            sizeof(error)));
+    PERSIST_CHECK(manager.paths.second_uses_collision_suffix);
+    PERSIST_CHECK(strcmp(manager.paths.sram[0], manager.paths.sram[1]) != 0);
+    PERSIST_CHECK(strstr(manager.paths.sram[1], ".srm.2") != NULL);
+    memcpy(cleanup_paths[0], manager.paths.sram[0], DUALBOY_PATH_CAPACITY);
+    memcpy(cleanup_paths[1], manager.paths.sram[1], DUALBOY_PATH_CAPACITY);
+    memcpy(cleanup_paths[2], manager.paths.rtc[0], DUALBOY_PATH_CAPACITY);
+    memcpy(cleanup_paths[3], manager.paths.rtc[1], DUALBOY_PATH_CAPACITY);
+    for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
+        PERSIST_CHECK(operations->memory_info(pair, machine,
+                                              DUALBOY_MEMORY_SAVE_RAM,
+                                              &sram[machine],
+                                              &sram_size[machine]));
+        PERSIST_CHECK(sram[machine] != NULL && sram_size[machine] > 0x100U);
+        /* This enters mGBA with the manager-loaded buffer on first run. */
+        ((uint8_t *)sram[machine])[0x100U] = expected_sentinel[machine];
+    }
+
+    operations->set_input(pair,
+                          0U,
+                          (uint16_t)(DUALBOY_BUTTON_A |
+                                     DUALBOY_BUTTON_RIGHT));
+    operations->set_input(pair,
+                          1U,
+                          (uint16_t)(DUALBOY_BUTTON_B |
+                                     DUALBOY_BUTTON_LEFT));
+    for (frame = 0U; frame < TEST_FRAME_LIMIT; ++frame) {
+        PERSIST_CHECK(operations->run_frame(pair, error, sizeof(error)));
+        PERSIST_CHECK(operations->memory_info(pair, 0U,
+                                              DUALBOY_MEMORY_SAVE_RAM,
+                                              &sram[0], &sram_size[0]));
+        PERSIST_CHECK(operations->memory_info(pair, 1U,
+                                              DUALBOY_MEMORY_SAVE_RAM,
+                                              &sram[1], &sram_size[1]));
+        if (((const uint8_t *)sram[0])[2] == 0x5AU &&
+            ((const uint8_t *)sram[1])[2] == 0x5AU) {
+            guest_wrote_both = true;
+            break;
+        }
+    }
+    PERSIST_CHECK(guest_wrote_both);
+    for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
+        PERSIST_CHECK(memcmp(sram[machine], expected_guest[machine], 4U) == 0);
+        PERSIST_CHECK(((const uint8_t *)sram[machine])[0x100U] ==
+                      expected_sentinel[machine]);
+    }
+    PERSIST_CHECK(dualboy_save_manager_flush(&manager, &session, true, error,
+                                             sizeof(error)));
+    PERSIST_CHECK(file_size_is(manager.paths.sram[0], 0x8000U));
+    PERSIST_CHECK(file_size_is(manager.paths.sram[1], 0x8000U));
+
+    dualboy_save_manager_deinit(&manager);
+    operations->destroy_pair(pair);
+    pair = NULL;
+    session.pair = NULL;
+    session.loaded = false;
+
+    PERSIST_CHECK(operations->create_pair(&pair, &config, error,
+                                          sizeof(error)));
+    PERSIST_CHECK(operations->load_rom(pair, 0U, &content[0], error,
+                                       sizeof(error)));
+    PERSIST_CHECK(operations->load_rom(pair, 1U, &content[1], error,
+                                       sizeof(error)));
+    PERSIST_CHECK(operations->set_link(pair, true, error, sizeof(error)));
+    wrap_live_pair(&session, operations, pair, content);
+    for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
+        PERSIST_CHECK(operations->memory_info(pair, machine,
+                                              DUALBOY_MEMORY_SAVE_RAM,
+                                              &sram[machine],
+                                              &sram_size[machine]));
+        PERSIST_CHECK(sram[machine] != NULL && sram_size[machine] > 0x100U);
+        memset(sram[machine], 0, 4U);
+        ((uint8_t *)sram[machine])[0x100U] = 0U;
+    }
+    PERSIST_CHECK(dualboy_save_manager_init(&manager, &session,
+                                            temporary_directory, error,
+                                            sizeof(error)));
+    for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
+        PERSIST_CHECK(memcmp(sram[machine], expected_guest[machine], 4U) == 0);
+        PERSIST_CHECK(((const uint8_t *)sram[machine])[0x100U] ==
+                      expected_sentinel[machine]);
+    }
+
+    /* A frame imports the restored shadow buffers into fresh mGBA cores. */
+    PERSIST_CHECK(operations->run_frame(pair, error, sizeof(error)));
+    for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
+        PERSIST_CHECK(operations->memory_info(pair, machine,
+                                              DUALBOY_MEMORY_SAVE_RAM,
+                                              &sram[machine],
+                                              &sram_size[machine]));
+        PERSIST_CHECK(((const uint8_t *)sram[machine])[0x100U] ==
+                      expected_sentinel[machine]);
+    }
+    success = true;
+
+cleanup:
+    dualboy_save_manager_deinit(&manager);
+    if (pair != NULL) {
+        operations->destroy_pair(pair);
+    }
+    free(rom);
+    if (directory_created) {
+        for (machine = 0U; machine < 4U; ++machine) {
+            if (cleanup_paths[machine][0] != '\0') {
+                char lock_path[DUALBOY_PATH_CAPACITY];
+                const int length = snprintf(lock_path, sizeof(lock_path),
+                                            "%s.dualboy.lock",
+                                            cleanup_paths[machine]);
+
+                (void)unlink(cleanup_paths[machine]);
+                if (length > 0 && (size_t)length < sizeof(lock_path)) {
+                    (void)unlink(lock_path);
+                }
+            }
+        }
+        (void)rmdir(temporary_directory);
+    }
+    return success;
+}
+
+static bool test_rtc_survives_machine_state_restore(void)
+{
+    static const uint8_t rtc_seed_a[16] = {
+        0x24U, 0x01U, 0x02U, 0x02U, 0x03U, 0x04U, 0x05U, 0x40U,
+        0x11U, 0x22U, 0x33U, 0x44U, 0x55U, 0x66U, 0x00U, 0x00U,
+    };
+    static const uint8_t rtc_seed_b[16] = {
+        0x26U, 0x09U, 0x07U, 0x01U, 0x12U, 0x34U, 0x56U, 0x00U,
+        0x88U, 0x77U, 0x66U, 0x55U, 0x44U, 0x33U, 0x00U, 0x00U,
+    };
+    const struct dualboy_engine_ops *operations = dualboy_mgba_engine();
+    const struct dualboy_engine_config config = {.audio_sample_rate = 48000U};
+    struct dualboy_rom content[2] = {{0}};
+    struct dualboy_session session = {0};
+    struct dualboy_save_manager manager = {0};
+    uint8_t expected_rtc[16];
+    uint8_t disk_rtc[16];
+    uint8_t *machine_state = NULL;
+    uint8_t *rom = NULL;
+    void *pair = NULL;
+    void *rtc = NULL;
+    size_t rtc_size = 0U;
+    size_t machine_state_size;
+    size_t used = 0U;
+    size_t disk_size = 0U;
+    char cleanup_paths[4][DUALBOY_PATH_CAPACITY] = {{0}};
+    char temporary_directory[] = "/tmp/dualboy-mgba-rtc-XXXXXX";
+    char error[256] = {0};
+    bool directory_created = false;
+    bool success = false;
+    unsigned machine;
+    unsigned frame;
+
+    PERSIST_CHECK(operations != NULL);
+    rom = (uint8_t *)malloc(TEST_ROM_SIZE);
+    PERSIST_CHECK(rom != NULL);
+    PERSIST_CHECK(make_test_rom(rom));
+    set_test_rom_game_code(rom, "BR4J");
+    PERSIST_CHECK(test_rom_header_is_valid(rom, TEST_ROM_SIZE));
+    for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
+        content[machine].platform = DUALBOY_PLATFORM_GBA;
+        content[machine].data = rom;
+        content[machine].size = TEST_ROM_SIZE;
+        content[machine].path = machine == 0U ? "rtc-a.gba" : "rtc-b.gba";
+    }
+
+    /* Produce a legitimate machine blob containing RTC record A. */
+    PERSIST_CHECK(operations->create_pair(&pair, &config, error,
+                                          sizeof(error)));
+    for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
+        PERSIST_CHECK(operations->load_rom(pair, machine, &content[machine],
+                                           error, sizeof(error)));
+    }
+    PERSIST_CHECK(operations->set_link(pair, false, error, sizeof(error)));
+    for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
+        PERSIST_CHECK(operations->memory_info(pair, machine,
+                                              DUALBOY_MEMORY_RTC,
+                                              &rtc, &rtc_size));
+        PERSIST_CHECK(rtc != NULL && rtc_size == sizeof(rtc_seed_a));
+        memcpy(rtc, rtc_seed_a, sizeof(rtc_seed_a));
+    }
+    PERSIST_CHECK(operations->run_frame(pair, error, sizeof(error)));
+    machine_state_size = operations->machine_state_size(pair, 0U);
+    PERSIST_CHECK(machine_state_size > 32U);
+    machine_state = (uint8_t *)malloc(machine_state_size);
+    PERSIST_CHECK(machine_state != NULL);
+    PERSIST_CHECK(operations->serialize_machine(pair, 0U, machine_state,
+                                                machine_state_size, &used));
+    PERSIST_CHECK(used == machine_state_size);
+    operations->destroy_pair(pair);
+    pair = NULL;
+
+    /* A fresh current session owns RTC record B. Loading A must preserve B in
+     * both the live mGBA GPIO and the core-managed file. */
+    PERSIST_CHECK(mkdtemp(temporary_directory) != NULL);
+    directory_created = true;
+    PERSIST_CHECK(operations->create_pair(&pair, &config, error,
+                                          sizeof(error)));
+    for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
+        PERSIST_CHECK(operations->load_rom(pair, machine, &content[machine],
+                                           error, sizeof(error)));
+    }
+    PERSIST_CHECK(operations->set_link(pair, false, error, sizeof(error)));
+    wrap_live_pair(&session, operations, pair, content);
+    PERSIST_CHECK(dualboy_save_manager_init(&manager, &session,
+                                            temporary_directory, error,
+                                            sizeof(error)));
+    memcpy(cleanup_paths[0], manager.paths.sram[0], DUALBOY_PATH_CAPACITY);
+    memcpy(cleanup_paths[1], manager.paths.sram[1], DUALBOY_PATH_CAPACITY);
+    memcpy(cleanup_paths[2], manager.paths.rtc[0], DUALBOY_PATH_CAPACITY);
+    memcpy(cleanup_paths[3], manager.paths.rtc[1], DUALBOY_PATH_CAPACITY);
+    for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
+        PERSIST_CHECK(operations->memory_info(pair, machine,
+                                              DUALBOY_MEMORY_RTC,
+                                              &rtc, &rtc_size));
+        PERSIST_CHECK(rtc != NULL && rtc_size == sizeof(rtc_seed_b));
+        memcpy(rtc, rtc_seed_b, sizeof(rtc_seed_b));
+    }
+    PERSIST_CHECK(operations->run_frame(pair, error, sizeof(error)));
+    PERSIST_CHECK(operations->memory_info(pair, 0U, DUALBOY_MEMORY_RTC,
+                                          &rtc, &rtc_size));
+    PERSIST_CHECK(rtc_size == sizeof(expected_rtc));
+    memcpy(expected_rtc, rtc, sizeof(expected_rtc));
+
+    PERSIST_CHECK(operations->unserialize_machine(pair, 0U, machine_state,
+                                                  machine_state_size));
+    PERSIST_CHECK(operations->memory_info(pair, 0U, DUALBOY_MEMORY_RTC,
+                                          &rtc, &rtc_size));
+    PERSIST_CHECK(rtc_size == sizeof(expected_rtc));
+    PERSIST_CHECK(memcmp(rtc, expected_rtc, sizeof(expected_rtc)) == 0);
+
+    for (frame = 0U; frame <= DUALBOY_SAVE_FLUSH_INTERVAL_FRAMES; ++frame) {
+        PERSIST_CHECK(operations->run_frame(pair, error, sizeof(error)));
+    }
+    PERSIST_CHECK(operations->memory_info(pair, 0U, DUALBOY_MEMORY_RTC,
+                                          &rtc, &rtc_size));
+    PERSIST_CHECK(rtc_size == sizeof(expected_rtc));
+    memcpy(expected_rtc, rtc, sizeof(expected_rtc));
+    PERSIST_CHECK(dualboy_save_manager_flush(&manager, &session, true, error,
+                                             sizeof(error)));
+    PERSIST_CHECK(dualboy_read_file_filled(manager.paths.rtc[0],
+                                           disk_rtc,
+                                           sizeof(disk_rtc),
+                                           0U,
+                                           &disk_size) ==
+                  DUALBOY_PERSISTENCE_OK);
+    PERSIST_CHECK(disk_size == sizeof(disk_rtc));
+    PERSIST_CHECK(memcmp(disk_rtc, expected_rtc, sizeof(disk_rtc)) == 0);
+    success = true;
+
+cleanup:
+    dualboy_save_manager_deinit(&manager);
+    if (pair != NULL) {
+        operations->destroy_pair(pair);
+    }
+    free(machine_state);
+    free(rom);
+    if (directory_created) {
+        for (machine = 0U; machine < 4U; ++machine) {
+            if (cleanup_paths[machine][0] != '\0') {
+                char lock_path[DUALBOY_PATH_CAPACITY];
+                const int length = snprintf(lock_path, sizeof(lock_path),
+                                            "%s.dualboy.lock",
+                                            cleanup_paths[machine]);
+
+                (void)unlink(cleanup_paths[machine]);
+                if (length > 0 && (size_t)length < sizeof(lock_path)) {
+                    (void)unlink(lock_path);
+                }
+            }
+        }
+        (void)rmdir(temporary_directory);
+    }
+    return success;
+}
+
 int main(void)
 {
-    if (!test_rejections_and_partial_teardown() || !run_linked_pair_case()) {
+    if (!test_rejections_and_partial_teardown() ||
+        !test_save_type_override_extents() ||
+        !test_resolved_flash_state_into_fresh_pair() ||
+        !run_linked_pair_case() ||
+        !test_disk_persistence_round_trip() ||
+        !test_rtc_survives_machine_state_restore()) {
         return EXIT_FAILURE;
     }
-    puts("mGBA adapter tests passed (guest SIO exchange verified)");
+    puts("mGBA adapter tests passed (guest SIO, state-safe RTC, and disk reload verified)");
     return EXIT_SUCCESS;
 }

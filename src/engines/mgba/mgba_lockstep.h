@@ -79,6 +79,7 @@ struct DualBoyGBASIOLockstepDriver {
 	struct DualBoyGBASIOLockstepCoordinator* coordinator;
 	struct mTimingEvent event;
 	unsigned lockstepId;
+	bool loadingMachineState;
 
 	struct mLockstepUser* user;
 };
@@ -91,6 +92,7 @@ void DualBoyGBASIOLockstepCoordinatorDetach(struct DualBoyGBASIOLockstepCoordina
 size_t DualBoyGBASIOLockstepCoordinatorAttached(struct DualBoyGBASIOLockstepCoordinator*);
 
 void DualBoyGBASIOLockstepDriverCreate(struct DualBoyGBASIOLockstepDriver*, struct mLockstepUser*);
+bool DualBoyGBASIOLockstepDriverValidateState(const struct DualBoyGBASIOLockstepDriver*, const void*, size_t);
 
 CXX_GUARD_END
 

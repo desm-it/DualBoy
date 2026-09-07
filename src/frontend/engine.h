@@ -121,6 +121,14 @@ struct dualboy_engine_ops {
                         enum dualboy_memory_kind kind,
                         void **data,
                         size_t *size);
+    /* Optional disk extent for a stable memory region. `known == false`
+     * means an auto-detecting engine has not selected a save device yet;
+     * callers must preserve any existing file and defer writes. */
+    bool (*persistent_memory_extent)(const void *pair,
+                                     unsigned machine,
+                                     enum dualboy_memory_kind kind,
+                                     bool *known,
+                                     size_t *size);
     bool (*memory_dirty)(const void *pair, unsigned machine);
     void (*clear_memory_dirty)(void *pair, unsigned machine);
 

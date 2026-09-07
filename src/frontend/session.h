@@ -39,6 +39,7 @@ struct dualboy_session {
     size_t machine_state_capacity[DUALBOY_MACHINE_COUNT];
     size_t link_state_capacity;
     enum dualboy_load_kind load_kind;
+    bool content_path_missing[DUALBOY_MACHINE_COUNT];
     bool link_enabled;
     bool loaded;
 };

@@ -24,6 +24,7 @@ struct fake_pair {
     uint8_t battery[2];
     uint8_t link_value;
     bool link_enabled;
+    bool fail_forever;
     int fail_machine;
 };
 
@@ -124,7 +125,9 @@ static bool fake_unserialize_machine(void *context,
     pair->value[machine] = bytes[0];
     pair->battery[machine] = bytes[1];
     if ((int)machine == pair->fail_machine) {
-        pair->fail_machine = -1;
+        if (!pair->fail_forever) {
+            pair->fail_machine = -1;
+        }
         return false;
     }
     return true;
@@ -301,11 +304,44 @@ static bool test_second_machine_failure_rolls_back_pair(void)
     return true;
 }
 
+static bool test_failed_rollback_is_fatal(void)
+{
+    struct dualboy_session session;
+    struct fake_pair *pair;
+    uint8_t *state;
+    size_t state_size;
+    char error[128] = {0};
+
+    CHECK(make_session(&session));
+    pair = session.pair;
+    pair->value[0] = 9U;
+    pair->value[1] = 8U;
+    state_size = dualboy_state_size(&session);
+    state = malloc(state_size);
+    CHECK(state != NULL);
+    CHECK(dualboy_state_serialize(&session, state, state_size, error,
+                                  sizeof(error)));
+
+    pair->value[0] = 1U;
+    pair->value[1] = 2U;
+    pair->fail_machine = 1;
+    pair->fail_forever = true;
+    CHECK(dualboy_state_unserialize_ex(&session, state, state_size, error,
+                                      sizeof(error)) ==
+          DUALBOY_STATE_RESTORE_FATAL);
+    CHECK(strstr(error, "rollback was incomplete") != NULL);
+
+    free(state);
+    dualboy_session_unload(&session);
+    return true;
+}
+
 int main(void)
 {
     if (!test_round_trip_and_battery_protection() ||
         !test_corruption_rejected_before_mutation() ||
-        !test_second_machine_failure_rolls_back_pair()) {
+        !test_second_machine_failure_rolls_back_pair() ||
+        !test_failed_rollback_is_fatal()) {
         return EXIT_FAILURE;
     }
     puts("savestate tests passed");

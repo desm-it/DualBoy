@@ -395,11 +395,12 @@ static bool rollback_state(struct dualboy_session *session,
     return success;
 }
 
-bool dualboy_state_unserialize(struct dualboy_session *session,
-                               const void *data,
-                               size_t size,
-                               char *error,
-                               size_t error_size)
+enum dualboy_state_restore_result
+dualboy_state_unserialize_ex(struct dualboy_session *session,
+                             const void *data,
+                             size_t size,
+                             char *error,
+                             size_t error_size)
 {
     const uint8_t *bytes = data;
     const uint8_t *payload;
@@ -421,20 +422,20 @@ bool dualboy_state_unserialize(struct dualboy_session *session,
     if (!state_ops_valid(session) || data == NULL ||
         size < DUALBOY_STATE_HEADER_SIZE) {
         set_error(error, error_size, "savestate is absent, truncated, or no game is loaded");
-        return false;
+        return DUALBOY_STATE_RESTORE_REJECTED;
     }
     if (memcmp(bytes, state_magic, sizeof(state_magic)) != 0 ||
         get_u32(bytes + 8U) != DUALBOY_STATE_VERSION ||
         get_u32(bytes + 12U) != DUALBOY_STATE_HEADER_SIZE ||
         get_u32(bytes + 108U) != crc32_bytes(bytes, 108U)) {
         set_error(error, error_size, "savestate header is corrupt or unsupported");
-        return false;
+        return DUALBOY_STATE_RESTORE_REJECTED;
     }
     if (get_u32(bytes + 24U) != (uint32_t)session->engine->family ||
         get_u32(bytes + 28U) != (uint32_t)session->roms[0].rom.platform ||
         get_u32(bytes + 32U) != (uint32_t)session->roms[1].rom.platform) {
         set_error(error, error_size, "savestate engine or platform does not match");
-        return false;
+        return DUALBOY_STATE_RESTORE_REJECTED;
     }
     if (get_u64(bytes + 40U) != (uint64_t)session->roms[0].rom.size ||
         get_u64(bytes + 48U) != (uint64_t)session->roms[1].rom.size ||
@@ -443,12 +444,12 @@ bool dualboy_state_unserialize(struct dualboy_session *session,
         get_u32(bytes + 60U) !=
             crc32_bytes(session->roms[1].rom.data, session->roms[1].rom.size)) {
         set_error(error, error_size, "savestate cartridges do not match this session");
-        return false;
+        return DUALBOY_STATE_RESTORE_REJECTED;
     }
     flags = get_u32(bytes + 36U);
     if ((flags & ~DUALBOY_STATE_FLAG_LINK_ENABLED) != 0U) {
         set_error(error, error_size, "savestate uses unknown feature flags");
-        return false;
+        return DUALBOY_STATE_RESTORE_REJECTED;
     }
     lengths64[0] = get_u64(bytes + 64U);
     lengths64[1] = get_u64(bytes + 72U);
@@ -456,20 +457,20 @@ bool dualboy_state_unserialize(struct dualboy_session *session,
     if (!lengths_valid(lengths64[0], lengths64[1], lengths64[2], size, &total) ||
         get_u64(bytes + 16U) != (uint64_t)total) {
         set_error(error, error_size, "savestate lengths are invalid");
-        return false;
+        return DUALBOY_STATE_RESTORE_REJECTED;
     }
     for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
         lengths[machine] = (size_t)lengths64[machine];
         if (lengths[machine] == 0U ||
             lengths[machine] > session->machine_state_capacity[machine]) {
             set_error(error, error_size, "savestate machine payload is invalid");
-            return false;
+            return DUALBOY_STATE_RESTORE_REJECTED;
         }
     }
     lengths[2] = (size_t)lengths64[2];
     if (lengths[2] > session->link_state_capacity) {
         set_error(error, error_size, "savestate link payload is invalid");
-        return false;
+        return DUALBOY_STATE_RESTORE_REJECTED;
     }
     payload = bytes + DUALBOY_STATE_HEADER_SIZE;
     if (get_u32(bytes + 88U) != crc32_bytes(payload, lengths[0]) ||
@@ -478,14 +479,14 @@ bool dualboy_state_unserialize(struct dualboy_session *session,
         get_u32(bytes + 96U) !=
             crc32_bytes(payload + lengths[0] + lengths[1], lengths[2])) {
         set_error(error, error_size, "savestate payload checksum failed");
-        return false;
+        return DUALBOY_STATE_RESTORE_REJECTED;
     }
 
     if (!snapshot_state(session, &snapshot, error, error_size) ||
         !copy_battery(session, battery, error, error_size)) {
         restore_and_free_battery(battery);
         free_state_parts(&snapshot);
-        return false;
+        return DUALBOY_STATE_RESTORE_REJECTED;
     }
 
     old_link_enabled = session->link_enabled;
@@ -523,6 +524,19 @@ failure:
     if (!applied && !rollback_ok) {
         set_error(error, error_size,
                   "savestate restore failed and engine rollback was incomplete");
+        return DUALBOY_STATE_RESTORE_FATAL;
     }
-    return applied;
+    return applied ? DUALBOY_STATE_RESTORE_OK
+                   : DUALBOY_STATE_RESTORE_REJECTED;
+}
+
+bool dualboy_state_unserialize(struct dualboy_session *session,
+                               const void *data,
+                               size_t size,
+                               char *error,
+                               size_t error_size)
+{
+    return dualboy_state_unserialize_ex(session, data, size, error,
+                                        error_size) ==
+           DUALBOY_STATE_RESTORE_OK;
 }

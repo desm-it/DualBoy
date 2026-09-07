@@ -12,6 +12,17 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+if(DUALBOY_ENABLE_ASAN AND CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    # Apply sanitizers at directory scope so code in static archives (including
+    # both emulator adapters) is instrumented, not only the final shared object.
+    add_compile_options(
+        -fno-omit-frame-pointer -fsanitize=address,undefined
+    )
+    add_link_options(
+        -fno-omit-frame-pointer -fsanitize=address,undefined
+    )
+endif()
+
 add_library(dualboy_frontend STATIC
     src/frontend/content.c
     src/frontend/compositor.c
@@ -169,15 +180,6 @@ if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
     endif()
 endif()
 
-if(DUALBOY_ENABLE_ASAN AND CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(dualboy_libretro PRIVATE
-        -fno-omit-frame-pointer -fsanitize=address,undefined
-    )
-    target_link_options(dualboy_libretro PRIVATE
-        -fno-omit-frame-pointer -fsanitize=address,undefined
-    )
-endif()
-
 set_target_properties(dualboy_libretro PROPERTIES
     PREFIX ""
     OUTPUT_NAME "dualboy_libretro"
@@ -248,7 +250,10 @@ if(BUILD_TESTING)
     add_test(NAME save_manager_unit COMMAND save_manager_test)
 
     add_executable(sameboy_adapter_test tests/sameboy_adapter_test.c)
-    target_link_libraries(sameboy_adapter_test PRIVATE dualboy_sameboy_adapter)
+    target_link_libraries(sameboy_adapter_test PRIVATE
+        dualboy_sameboy_adapter
+        dualboy_frontend
+    )
     if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
         target_compile_options(sameboy_adapter_test PRIVATE
             -Wall -Wextra -Wpedantic -Wconversion -Wshadow
@@ -260,7 +265,10 @@ if(BUILD_TESTING)
     add_test(NAME sameboy_adapter_unit COMMAND sameboy_adapter_test)
 
     add_executable(mgba_adapter_test tests/mgba_adapter_test.c)
-    target_link_libraries(mgba_adapter_test PRIVATE dualboy_mgba_adapter)
+    target_link_libraries(mgba_adapter_test PRIVATE
+        dualboy_mgba_adapter
+        dualboy_frontend
+    )
     if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
         target_compile_options(mgba_adapter_test PRIVATE
             -Wall -Wextra -Wpedantic -Wconversion -Wshadow
@@ -281,14 +289,6 @@ if(BUILD_TESTING)
         if(DUALBOY_WARNINGS_AS_ERRORS)
             target_compile_options(libretro_smoke PRIVATE -Werror)
         endif()
-    endif()
-    if(DUALBOY_ENABLE_ASAN AND CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
-        target_compile_options(libretro_smoke PRIVATE
-            -fno-omit-frame-pointer -fsanitize=address,undefined
-        )
-        target_link_options(libretro_smoke PRIVATE
-            -fno-omit-frame-pointer -fsanitize=address,undefined
-        )
     endif()
     add_test(NAME libretro_abi_smoke
         COMMAND libretro_smoke $<TARGET_FILE:dualboy_libretro>
