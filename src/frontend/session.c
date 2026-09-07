@@ -83,6 +83,35 @@ static bool own_rom(struct dualboy_owned_rom *destination,
     return true;
 }
 
+static bool cache_state_capacities(struct dualboy_session *session,
+                                   char *error,
+                                   size_t error_size)
+{
+    const struct dualboy_engine_ops *ops = session->engine;
+    unsigned machine;
+
+    memset(session->machine_state_capacity, 0,
+           sizeof(session->machine_state_capacity));
+    session->link_state_capacity = 0U;
+    if (ops->machine_state_size == NULL || ops->serialize_machine == NULL ||
+        ops->unserialize_machine == NULL || ops->link_state_size == NULL ||
+        ops->serialize_link == NULL || ops->unserialize_link == NULL) {
+        return true;
+    }
+    for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
+        session->machine_state_capacity[machine] =
+            ops->machine_state_size(session->pair, machine);
+        if (session->machine_state_capacity[machine] == 0U) {
+            set_error(error, error_size,
+                      "%s reported no savestate capacity for machine %u",
+                      ops->name != NULL ? ops->name : "engine", machine + 1U);
+            return false;
+        }
+    }
+    session->link_state_capacity = ops->link_state_size(session->pair);
+    return true;
+}
+
 void dualboy_session_init(struct dualboy_session *session)
 {
     if (session == NULL) {
@@ -115,6 +144,9 @@ void dualboy_session_unload(struct dualboy_session *session)
     free(session->composite_pixels);
     session->composite_pixels = NULL;
     memset(&session->composite, 0, sizeof(session->composite));
+    memset(session->machine_state_capacity, 0,
+           sizeof(session->machine_state_capacity));
+    session->link_state_capacity = 0U;
     session->loaded = false;
     session->link_enabled = false;
     session->load_kind = DUALBOY_LOAD_NORMAL;
@@ -181,6 +213,9 @@ bool dualboy_session_load(struct dualboy_session *session,
     }
     if (engine->set_link != NULL &&
         !engine->set_link(session->pair, link_enabled, error, error_size)) {
+        goto failure;
+    }
+    if (!cache_state_capacities(session, error, error_size)) {
         goto failure;
     }
 

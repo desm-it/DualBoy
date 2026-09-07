@@ -16,6 +16,7 @@ add_library(dualboy_frontend STATIC
     src/frontend/content.c
     src/frontend/compositor.c
     src/frontend/session.c
+    src/frontend/state.c
 )
 
 target_include_directories(dualboy_frontend PUBLIC
@@ -93,6 +94,16 @@ if(BUILD_TESTING)
         endif()
     endif()
     add_test(NAME session_unit COMMAND session_test)
+
+    add_executable(state_test tests/state_test.c)
+    target_link_libraries(state_test PRIVATE dualboy_frontend)
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+        target_compile_options(state_test PRIVATE -Wall -Wextra -Wpedantic)
+        if(DUALBOY_WARNINGS_AS_ERRORS)
+            target_compile_options(state_test PRIVATE -Werror)
+        endif()
+    endif()
+    add_test(NAME state_unit COMMAND state_test)
 
     add_executable(libretro_smoke tests/libretro_smoke.c)
     target_include_directories(libretro_smoke PRIVATE

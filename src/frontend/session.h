@@ -36,6 +36,8 @@ struct dualboy_session {
     uint32_t *composite_pixels;
     struct dualboy_video_frame composite;
     struct dualboy_compositor_config display;
+    size_t machine_state_capacity[DUALBOY_MACHINE_COUNT];
+    size_t link_state_capacity;
     enum dualboy_load_kind load_kind;
     bool link_enabled;
     bool loaded;
