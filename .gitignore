@@ -1,0 +1,14 @@
+build/
+build-*/
+dist/
+Testing/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.gcda
+*.gcno
+*.profraw
+*.profdata
+.DS_Store
