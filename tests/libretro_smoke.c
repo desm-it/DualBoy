@@ -125,6 +125,8 @@ struct frontend_fixture {
     const char *layout;
     const char *nds_renderer;
     const char *link;
+    const char *player1_controller;
+    const char *player2_controller;
     const char *swap;
     const char *audio_source;
     uint16_t input_masks[2];
@@ -320,6 +322,12 @@ static const char *option_value(const char *key)
     }
     if (strcmp(key, "dualboy_link") == 0) {
         return frontend.link;
+    }
+    if (strcmp(key, "dualboy_player1_controller") == 0) {
+        return frontend.player1_controller;
+    }
+    if (strcmp(key, "dualboy_player2_controller") == 0) {
+        return frontend.player2_controller;
     }
     if (strcmp(key, "dualboy_swap_players") == 0) {
         return frontend.swap;
@@ -652,6 +660,8 @@ static void set_default_options(void)
     frontend.layout = "side_by_side";
     frontend.nds_renderer = "software";
     frontend.link = "enabled";
+    frontend.player1_controller = "port1";
+    frontend.player2_controller = "port2";
     frontend.swap = "disabled";
     frontend.audio_source = "player1";
     frontend.option_updated = true;
@@ -922,10 +932,12 @@ static bool validate_registration(const struct core_api *api)
     static const char *const option_keys[] = {
         "dualboy_mode", "dualboy_layout", "dualboy_nds_renderer",
         "dualboy_link",
+        "dualboy_player1_controller", "dualboy_player2_controller",
         "dualboy_swap_players", "dualboy_audio_source",
     };
     static const char *const option_defaults[] = {
-        "dual", "side_by_side", "software", "enabled", "disabled",
+        "dual", "side_by_side", "software", "enabled", "port1", "port2",
+        "disabled",
         "player1",
     };
     struct retro_system_info info;
@@ -934,8 +946,8 @@ static bool validate_registration(const struct core_api *api)
     size_t index;
     size_t descriptor_count = 0U;
     size_t category_count = 0U;
-    bool player1_r2_described = false;
-    bool player2_r2_described = false;
+    bool port1_r2_described = false;
+    bool port2_r2_described = false;
 
     REQUIRE(api->api_version() == RETRO_API_VERSION);
     memset(&info, 0, sizeof(info));
@@ -1011,15 +1023,20 @@ static bool validate_registration(const struct core_api *api)
         if (descriptor->device == RETRO_DEVICE_JOYPAD &&
             descriptor->id == RETRO_DEVICE_ID_JOYPAD_R2) {
             if (descriptor->port == 0U) {
-                player1_r2_described = true;
+                port1_r2_described = true;
             } else if (descriptor->port == 1U) {
-                player2_r2_described = true;
+                port2_r2_described = true;
             }
         }
+        REQUIRE(descriptor->port < 2U);
+        REQUIRE(strncmp(descriptor->description,
+                        descriptor->port == 0U ? "Controller Port 1 "
+                                               : "Controller Port 2 ",
+                        strlen("Controller Port 1 ")) == 0);
         ++descriptor_count;
     }
     REQUIRE(descriptor_count == 32U);
-    REQUIRE(player1_r2_described && player2_r2_described);
+    REQUIRE(port1_r2_described && port2_r2_described);
 
     REQUIRE(frontend.options_v2 != NULL);
     REQUIRE(frontend.options_v2->categories != NULL);
@@ -1029,7 +1046,7 @@ static bool validate_registration(const struct core_api *api)
         ++category_count;
     }
     REQUIRE(category_count == 3U);
-    for (index = 0U; index < 6U; ++index) {
+    for (index = 0U; index < 8U; ++index) {
         const struct retro_core_option_v2_definition *definition =
             &frontend.options_v2->definitions[index];
 
@@ -1039,7 +1056,7 @@ static bool validate_registration(const struct core_api *api)
         REQUIRE(strcmp(definition->default_value, option_defaults[index]) == 0);
         REQUIRE(definition->values[0].value != NULL);
     }
-    REQUIRE(frontend.options_v2->definitions[6].key == NULL);
+    REQUIRE(frontend.options_v2->definitions[8].key == NULL);
     REQUIRE(strcmp(frontend.options_v2->definitions[3].desc, "Local Link") ==
             0);
     REQUIRE(strstr(frontend.options_v2->definitions[3].info,
@@ -1545,6 +1562,36 @@ static bool test_nds_load_paths(struct core_api *api,
 #endif
     frontend.input_masks[0] = 0U;
     frontend.input_masks[1] = 0U;
+    frontend.right_analog[1][RETRO_DEVICE_ID_ANALOG_X] = 0;
+    frontend.right_analog[1][RETRO_DEVICE_ID_ANALOG_Y] = 0;
+
+    /* Changing Player 1's source port invalidates that machine's cursor. A
+     * held R2 on the newly selected, neutral port must not reuse the old
+     * port's visible aim point or authorize a touch. */
+    frontend.player1_controller = "port2";
+    frontend.input_masks[1] =
+        (uint16_t)(UINT16_C(1) << RETRO_DEVICE_ID_JOYPAD_R2);
+    frontend.option_updated = true;
+    frontend.time_usec = INT64_C(1000002);
+    api->run();
+    REQUIRE(frontend.video_probe_valid);
+    REQUIRE(frontend.video_probe_pixel != TEST_PLAYER1_CURSOR_COLOR);
+#if defined(DUALBOY_INTERNAL_TEST)
+    {
+        void *pair_handle = dualboy_libretro_debug_engine_pair();
+        bool active = true;
+        uint16_t x = 0U;
+        uint16_t y = 0U;
+
+        REQUIRE(pair_handle != NULL);
+        REQUIRE(dualboy_melonds_debug_last_touch(pair_handle, 0U, &active,
+                                                 &x, &y));
+        REQUIRE(!active);
+    }
+#endif
+    frontend.player1_controller = "port1";
+    frontend.input_masks[1] = 0U;
+    frontend.option_updated = true;
 
     /* Two simultaneous contacts occupy the two displayed bottom screens.
      * The adapter test independently verifies the resulting per-machine touch
@@ -1556,7 +1603,7 @@ static bool test_nds_load_paths(struct core_api *api,
     frontend.pointer_contacts[1].y = pointer_coordinate(292U, 384U);
     frontend.pointer_contacts[1].pressed = true;
     api->run();
-    REQUIRE(frontend.video_calls == 4U);
+    REQUIRE(frontend.video_calls == 5U);
     REQUIRE(frontend.video_width == 512U && frontend.video_height == 384U);
     REQUIRE(frontend.video_pitch == 512U * sizeof(uint32_t));
     REQUIRE(frontend.video_probe_valid);
@@ -1598,6 +1645,40 @@ static bool test_nds_load_paths(struct core_api *api,
     }
 #endif
 
+    /* Pointer contacts follow the machines currently drawn under them, not
+     * either player's selected controller port. Swap both the presentation
+     * and controller assignments and verify the same screen coordinates now
+     * reach the opposite displayed machines. */
+    frontend.swap = "enabled";
+    frontend.player1_controller = "port2";
+    frontend.player2_controller = "port1";
+    frontend.option_updated = true;
+    api->run();
+#if defined(DUALBOY_INTERNAL_TEST)
+    {
+        void *pair_handle = dualboy_libretro_debug_engine_pair();
+        bool active[2] = {false, false};
+        uint16_t x[2] = {0U, 0U};
+        uint16_t y[2] = {0U, 0U};
+
+        REQUIRE(pair_handle != NULL);
+        REQUIRE(dualboy_melonds_debug_last_touch(
+            pair_handle, 0U, &active[0], &x[0], &y[0]));
+        REQUIRE(dualboy_melonds_debug_last_touch(
+            pair_handle, 1U, &active[1], &x[1], &y[1]));
+        REQUIRE(active[0] && active[1]);
+        REQUIRE(x[0] == 128U && y[0] == 99U);
+        REQUIRE(x[1] == 64U && y[1] == 49U);
+    }
+#endif
+    frontend.pointer_contacts[0].pressed = false;
+    frontend.pointer_contacts[1].pressed = false;
+    frontend.swap = "disabled";
+    frontend.player1_controller = "port1";
+    frontend.player2_controller = "port2";
+    frontend.option_updated = true;
+    api->run();
+
     frontend.link = "disabled";
     frontend.option_updated = true;
     api->run();
@@ -1615,7 +1696,7 @@ static bool test_nds_load_paths(struct core_api *api,
     frontend.option_updated = true;
     frontend.input_masks[0] =
         (uint16_t)(UINT16_C(1) << RETRO_DEVICE_ID_JOYPAD_R2);
-    frontend.time_usec = INT64_C(4000000);
+    frontend.time_usec = INT64_C(4000003);
     frontend.video_probe_x = 64U;
     frontend.video_probe_y = 192U + 48U;
     frontend.video_probe_enabled = true;
@@ -1644,7 +1725,7 @@ static bool test_nds_load_paths(struct core_api *api,
     frontend.option_updated = true;
     frontend.input_masks[0] =
         (uint16_t)(UINT16_C(1) << RETRO_DEVICE_ID_JOYPAD_R3);
-    frontend.time_usec = INT64_C(4000001);
+    frontend.time_usec = INT64_C(4000004);
     frontend.video_probe_x = 64U;
     frontend.video_probe_y = 192U + 48U;
     frontend.video_probe_enabled = true;
@@ -2025,6 +2106,28 @@ static bool test_two_rom_subsystem(struct core_api *api,
     REQUIRE((second_sram[1] & 0x0FU) == 0x0DU);
     REQUIRE(frontend.first_screen_hash == second_hash);
     REQUIRE(frontend.second_screen_hash == first_hash);
+
+    /* Controller assignment is live and independent of presentation order.
+     * With the screens still swapped, exchange the two source ports and then
+     * intentionally assign Controller Port 2 to both machines. */
+    frontend.player1_controller = "port2";
+    frontend.player2_controller = "port1";
+    frontend.option_updated = true;
+    REQUIRE(run_until_subsystem_program(api, first_sram, second_sram,
+                                        0x51U, 0x62U, 0x0DU, 0x0EU));
+    REQUIRE(frontend.first_screen_hash == second_hash);
+    REQUIRE(frontend.second_screen_hash == first_hash);
+
+    frontend.player2_controller = "port2";
+    frontend.option_updated = true;
+    REQUIRE(run_until_subsystem_program(api, first_sram, second_sram,
+                                        0x51U, 0x62U, 0x0DU, 0x0DU));
+
+    frontend.player1_controller = "port1";
+    frontend.player2_controller = "port2";
+    frontend.option_updated = true;
+    REQUIRE(run_until_subsystem_program(api, first_sram, second_sram,
+                                        0x51U, 0x62U, 0x0EU, 0x0DU));
 
     frontend.layout = "top_bottom";
     frontend.option_updated = true;

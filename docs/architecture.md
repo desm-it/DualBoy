@@ -171,19 +171,25 @@ swapping exchanges the two dual-mode display slots; it does not alter a
 player-only selection or controller-to-machine routing.
 
 Input is polled once per frontend frame and captured as two structured values
-containing a RetroPad mask and optional touch coordinates. RetroArch port 0 maps
-to machine 0 and port 1 to machine 1 independently of screen order. During NDS
-sessions, successive pointer indices are inverse-mapped through the active
+containing a RetroPad mask and optional touch coordinates. Live core options
+select RetroArch port 0 or 1 independently for each machine; defaults are port 0
+for machine 0 and port 1 for machine 1, and duplicate selections are valid.
+DualBoy cannot enumerate or reorder physical controllers behind those Libretro
+ports, which remains frontend/platform state. During NDS sessions, successive
+pointer indices are inverse-mapped through the active
 compositor geometry and accepted only inside a displayed bottom screen, with one
-first-wins contact per DS. Each player's right analog stick plus R3 or R2 is an
-independent stylus fallback. Right-stick movement draws a clipped black/white
-reticle over that port's composed bottom screen without modifying either engine
-frame. R3 may reveal and press a stationary aim point; R2 presses only while the
-cursor is already visible and does not itself reveal or extend the cursor. A
-two-pixel activity threshold filters stick noise, and the cursor hides after
-three seconds using the optional Libretro performance clock or after 180 frames
-when that clock is unavailable. Physical pointer input suppresses the
-corresponding analog cursor for that frame. Machine 0 audio is
+first-wins contact per DS, independently of controller selection. Each machine's
+selected port supplies its right analog stick plus R3 or R2 stylus fallback.
+Right-stick movement draws a clipped black/white reticle over that machine's
+composed bottom screen without modifying either engine frame. Cursor state is
+machine-owned and reset when that machine changes source port, so a visible
+cursor from an old controller cannot authorize R2 on a new one. R3 may reveal
+and press a stationary aim point; R2 presses only while the cursor is already
+visible and does not itself reveal or extend the cursor. A two-pixel activity
+threshold filters stick noise, and the cursor hides after three seconds using
+the optional Libretro performance clock or after 180 frames when that clock is
+unavailable. Physical pointer input suppresses the corresponding analog cursor
+for that frame. Machine 0 audio is
 resampled/buffered as interleaved signed 16-bit stereo.
 Machine 1 audio is drained without emission so it cannot stall timing. The
 audio-disabled option still drains emulated audio.

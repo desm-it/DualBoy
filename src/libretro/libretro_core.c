@@ -152,40 +152,42 @@ static struct retro_controller_info controller_info[] = {
      (text_)}
 
 static struct retro_input_descriptor input_descriptors[] = {
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_UP, "Player 1 Up"),
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_DOWN, "Player 1 Down"),
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_LEFT, "Player 1 Left"),
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_RIGHT, "Player 1 Right"),
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_A, "Player 1 A"),
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_B, "Player 1 B"),
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_X, "Player 1 X"),
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_Y, "Player 1 Y"),
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_L, "Player 1 L"),
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_R, "Player 1 R"),
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_SELECT, "Player 1 Select"),
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_START, "Player 1 Start"),
+    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_UP, "Controller Port 1 Up"),
+    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_DOWN, "Controller Port 1 Down"),
+    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_LEFT, "Controller Port 1 Left"),
+    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_RIGHT, "Controller Port 1 Right"),
+    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_A, "Controller Port 1 A"),
+    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_B, "Controller Port 1 B"),
+    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_X, "Controller Port 1 X"),
+    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_Y, "Controller Port 1 Y"),
+    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_L, "Controller Port 1 L"),
+    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_R, "Controller Port 1 R"),
+    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_SELECT, "Controller Port 1 Select"),
+    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_START, "Controller Port 1 Start"),
     INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_R2,
-               "Player 1 Touch Press (Visible Cursor)"),
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_R3, "Player 1 Touch Press"),
-    ANALOG_DESC(0U, RETRO_DEVICE_ID_ANALOG_X, "Player 1 Touch X"),
-    ANALOG_DESC(0U, RETRO_DEVICE_ID_ANALOG_Y, "Player 1 Touch Y"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_UP, "Player 2 Up"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_DOWN, "Player 2 Down"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_LEFT, "Player 2 Left"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_RIGHT, "Player 2 Right"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_A, "Player 2 A"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_B, "Player 2 B"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_X, "Player 2 X"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_Y, "Player 2 Y"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_L, "Player 2 L"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_R, "Player 2 R"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_SELECT, "Player 2 Select"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_START, "Player 2 Start"),
+               "Controller Port 1 Touch Press (Visible Cursor)"),
+    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_R3,
+               "Controller Port 1 Touch Press"),
+    ANALOG_DESC(0U, RETRO_DEVICE_ID_ANALOG_X, "Controller Port 1 Touch X"),
+    ANALOG_DESC(0U, RETRO_DEVICE_ID_ANALOG_Y, "Controller Port 1 Touch Y"),
+    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_UP, "Controller Port 2 Up"),
+    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_DOWN, "Controller Port 2 Down"),
+    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_LEFT, "Controller Port 2 Left"),
+    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_RIGHT, "Controller Port 2 Right"),
+    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_A, "Controller Port 2 A"),
+    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_B, "Controller Port 2 B"),
+    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_X, "Controller Port 2 X"),
+    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_Y, "Controller Port 2 Y"),
+    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_L, "Controller Port 2 L"),
+    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_R, "Controller Port 2 R"),
+    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_SELECT, "Controller Port 2 Select"),
+    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_START, "Controller Port 2 Start"),
     INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_R2,
-               "Player 2 Touch Press (Visible Cursor)"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_R3, "Player 2 Touch Press"),
-    ANALOG_DESC(1U, RETRO_DEVICE_ID_ANALOG_X, "Player 2 Touch X"),
-    ANALOG_DESC(1U, RETRO_DEVICE_ID_ANALOG_Y, "Player 2 Touch Y"),
+               "Controller Port 2 Touch Press (Visible Cursor)"),
+    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_R3,
+               "Controller Port 2 Touch Press"),
+    ANALOG_DESC(1U, RETRO_DEVICE_ID_ANALOG_X, "Controller Port 2 Touch X"),
+    ANALOG_DESC(1U, RETRO_DEVICE_ID_ANALOG_Y, "Controller Port 2 Touch Y"),
     {0U, 0U, 0U, 0U, NULL},
 };
 
@@ -969,9 +971,10 @@ static bool touch_cursor_time(uint64_t *now_usec)
     return true;
 }
 
-static struct dualboy_machine_input read_port_input(unsigned port,
-                                                    bool time_available,
-                                                    uint64_t now_usec)
+static struct dualboy_machine_input read_machine_input(unsigned machine,
+                                                       unsigned port,
+                                                       bool time_available,
+                                                       uint64_t now_usec)
 {
     struct dualboy_machine_input input = {0U, false, 0U, 0U};
     const uint16_t button_mask = read_port_button_mask(port);
@@ -1005,19 +1008,19 @@ static struct dualboy_machine_input read_port_input(unsigned port,
             touch_y >= DUALBOY_NDS_SCREEN_HEIGHT / 2U +
                            DUALBOY_TOUCH_CURSOR_MOTION_PIXELS;
 
-        dualboy_touch_cursor_update(&core.touch_cursors[port], touch_x,
+        dualboy_touch_cursor_update(&core.touch_cursors[machine], touch_x,
                                     touch_y, initially_deflected, stick_pressed,
                                     time_available, now_usec);
 
         if (stick_pressed ||
             (trigger_pressed &&
-             dualboy_touch_cursor_visible(&core.touch_cursors[port]))) {
+             dualboy_touch_cursor_visible(&core.touch_cursors[machine]))) {
             input.touch_active = true;
             input.touch_x = touch_x;
             input.touch_y = touch_y;
         }
-    } else if (port < DUALBOY_MACHINE_COUNT) {
-        dualboy_touch_cursor_reset(&core.touch_cursors[port]);
+    } else if (machine < DUALBOY_MACHINE_COUNT) {
+        dualboy_touch_cursor_reset(&core.touch_cursors[machine]);
     }
     return input;
 }
@@ -1201,6 +1204,7 @@ static void update_options(void)
     if (core.environment != NULL &&
         core.environment(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) &&
         updated) {
+        unsigned machine;
         bool requested_link;
         bool frontend_link_changed;
         bool renderer_changed;
@@ -1240,6 +1244,12 @@ static void update_options(void)
         requested_renderer = candidate.nds_renderer;
         candidate.link_enabled = old_link;
         candidate.nds_renderer = old_renderer;
+        for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
+            if (candidate.controller_ports[machine] !=
+                core.options.controller_ports[machine]) {
+                dualboy_touch_cursor_reset(&core.touch_cursors[machine]);
+            }
+        }
         core.options = candidate;
 
         if (nds_session_loaded()) {
@@ -1685,10 +1695,10 @@ void retro_run(void)
     }
     display = current_display();
     synchronize_fastforward_policy();
-    inputs[0] = read_port_input(0U, cursor_time_available,
-                                cursor_time_usec);
-    inputs[1] = read_port_input(1U, cursor_time_available,
-                                cursor_time_usec);
+    inputs[0] = read_machine_input(0U, core.options.controller_ports[0],
+                                   cursor_time_available, cursor_time_usec);
+    inputs[1] = read_machine_input(1U, core.options.controller_ports[1],
+                                   cursor_time_available, cursor_time_usec);
     apply_pointer_contacts(inputs, &display, pointer_assigned);
     if (!dualboy_session_run(&core.session, inputs, &display, error,
                              sizeof(error))) {

@@ -21,9 +21,11 @@ libretro/mgba PR #318; NDS uses two melonDS objects plus upstream same-process
 
 All partial-load cleanup paths must be idempotent. ROM bytes are immutable and may
 be shared; SaveRAM, RTC, video, audio, state, and scheduler data may not be shared.
-Only machine 0 audio is emitted in the MVP. RetroArch port 0 maps to machine 0
-and port 1 to machine 1. The screen-swap option changes only their presentation
-order; it never changes controller routing.
+Only machine 0 audio is emitted in the MVP. By default RetroArch port 0 maps to
+machine 0 and port 1 to machine 1; live core options may select either of those
+ports for either machine, including the same port for both. Physical-device
+ordering remains owned by RetroArch/Steam. The screen-swap option changes only
+presentation order; it never changes controller routing.
 
 Persistence ownership depends on engine and load mode; do not infer it from a
 filename. Read `docs/saves.md` before changing memory IDs, save paths, extents,

@@ -37,12 +37,12 @@ digest-pinned `linux/amd64` container on an ARM64 Docker host:
 ```text
 make test-linux-x86_64
 100% tests passed, 0 tests failed out of 10
-Total Test time (real) = 83.90 sec
-sameboy_adapter_unit: 9.66 seconds
-mgba_adapter_unit: 6.20 seconds
-melonds_adapter_unit: 16.10 seconds
-libretro_abi_smoke: 30.19 seconds
-libretro_nds_pointer_integration: 21.12 seconds
+Total Test time (real) = 66.00 sec
+sameboy_adapter_unit: 9.17 seconds
+mgba_adapter_unit: 5.10 seconds
+melonds_adapter_unit: 14.58 seconds
+libretro_abi_smoke: 18.15 seconds
+libretro_nds_pointer_integration: 18.46 seconds
 ```
 
 The ten passing tests were `frontend_unit`, `session_unit`,
@@ -136,7 +136,8 @@ The repository's test sources use generated synthetic ROMs rather than commercia
 content. The passing native and x86-64 runs above exercised:
 
 - Nintendo-header detection, family compatibility, composition geometry,
-  player-only layouts, and presentation-only screen swap;
+  player-only layouts, presentation-only screen swap, live swapped/duplicate
+  controller-port routing, and unchanged input routing while screens swap;
 - shared immutable normal-load content with independent mutable sessions,
   two-slot subsystem ownership, and idempotent partial-failure cleanup;
 - paired save-state round trips, link payload restoration, battery/RTC
@@ -176,13 +177,15 @@ content. The passing native and x86-64 runs above exercised:
   returns when both machines rejoin;
 - two simultaneous pointer indices passed through the public Libretro callbacks,
   the production compositor transform, two real melonDS objects, and actual TSC
-  conversion reads with independently asserted coordinates;
+  conversion reads with independently asserted coordinates, including screen
+  swap while controller assignments are independently exchanged;
 - right-stick aiming shown before R3 or R2 touch, exact R3/R2 coordinates
   reaching the real melonDS TSC, R2 rejection while the cursor is hidden or
-  expired, direct-pointer precedence, exact three-second expiry through the
-  Libretro clock, 180-frame fallback timing, two-pixel drift filtering,
-  layout/swap projection, edge clipping, and black/white contrast over light,
-  dark, and colored frames;
+  expired, stale cursor invalidation when a machine changes controller port,
+  direct-pointer precedence, exact three-second expiry through the Libretro
+  clock, 180-frame fallback timing, two-pixel drift filtering, layout/swap
+  projection, edge clipping, and black/white contrast over light, dark, and
+  colored frames;
 - high-volume melonDS debug logging rejected before formatting/allocation, with
   info, warning, and error forwarding retained;
 - a deterministic held-worker deadline test proving that a timed-out frame does
@@ -292,8 +295,9 @@ Implementation plus the automated evidence above establish these components:
 - normal same-ROM, exactly-two-ROM `dualboylink` subsystem, and exactly-two-entry
   local M3U loading, with header-first detection and mixed-family rejection;
 - side-by-side, top/bottom, Player 1 only, Player 2 only, presentation-only
-  screen swap, mutually exclusive NDS OpenGL/local-link selection, link
-  enable/disable, and Player 1/disabled audio core options;
+  screen swap, live per-player selection of either RetroArch controller port,
+  mutually exclusive NDS OpenGL/local-link selection, link enable/disable, and
+  Player 1/disabled audio core options;
 - collision-safe independent SaveRAM/RTC, hash-derived pathless identities,
   nondestructive GBA `.sav` import, atomic writes, per-region
   `.dualboy.lock` coordination, and read-only behavior under contention;
@@ -366,6 +370,10 @@ such error remains a potential desynchronization and should be investigated.
   physical Deck/input-driver combination. The public-ABI automated test reaches
   two real melonDS TSC devices, but that does not establish hardware-driver
   behavior.
+- Live controller-port selection, duplicate port assignment, and independence
+  from screen swap are covered by generated-ROM tests but have not been checked
+  in real RetroArch or with a second physical Bluetooth controller. RetroArch or
+  Steam, not the core, decides which physical device occupies each Libretro port.
 - NDS manual states, rewind, and runahead are unsupported. Users must disable
   rewind and runahead in the per-core override.
 - NDS reports 59.8260982880808 Hz; GB/GBC/GBA retain 59.7275 Hz. NDS timing and
