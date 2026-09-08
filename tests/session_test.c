@@ -21,7 +21,7 @@
 
 struct fake_pair {
     const uint8_t *rom_data[2];
-    uint16_t input[2];
+    struct dualboy_machine_input input[2];
     uint32_t pixels[2][4];
     bool fail_second_load;
 };
@@ -74,10 +74,22 @@ static bool fake_link(void *context,
     return true;
 }
 
-static void fake_input(void *context, unsigned machine, uint16_t buttons)
+static void fake_input(void *context,
+                       unsigned machine,
+                       const struct dualboy_machine_input *input)
 {
     struct fake_pair *pair = context;
-    pair->input[machine] = buttons;
+    pair->input[machine] = *input;
+}
+
+static void fake_legacy_input(void *context,
+                              unsigned machine,
+                              uint16_t buttons)
+{
+    struct fake_pair *pair = context;
+
+    memset(&pair->input[machine], 0, sizeof(pair->input[machine]));
+    pair->input[machine].buttons = buttons;
 }
 
 static bool fake_run(void *context, char *error, size_t error_size)
@@ -122,7 +134,19 @@ static const struct dualboy_engine_ops fake_ops = {
     .create_pair = fake_create,
     .load_rom = fake_load,
     .set_link = fake_link,
-    .set_input = fake_input,
+    .set_machine_input = fake_input,
+    .run_frame = fake_run,
+    .video_frame = fake_video,
+    .destroy_pair = fake_destroy,
+};
+
+static const struct dualboy_engine_ops fake_legacy_ops = {
+    .name = "fake-legacy",
+    .family = DUALBOY_ENGINE_SAMEBOY,
+    .create_pair = fake_create,
+    .load_rom = fake_load,
+    .set_link = fake_link,
+    .set_input = fake_legacy_input,
     .run_frame = fake_run,
     .video_frame = fake_video,
     .destroy_pair = fake_destroy,
@@ -141,7 +165,10 @@ static bool test_same_content_and_swap(void)
         DUALBOY_LAYOUT_SIDE_BY_SIDE,
         true,
     };
-    const uint16_t input[2] = {0x11U, 0x22U};
+    const struct dualboy_machine_input input[2] = {
+        {0x11U, true, 12U, 34U},
+        {0x22U, true, 56U, 78U},
+    };
     struct dualboy_session session;
     struct fake_pair *pair;
     char error[128] = {0};
@@ -156,8 +183,8 @@ static bool test_same_content_and_swap(void)
     CHECK(pair->rom_data[0][0] == 1U);
 
     CHECK(dualboy_session_run(&session, input, &display, error, sizeof(error)));
-    CHECK(pair->input[0] == input[1]);
-    CHECK(pair->input[1] == input[0]);
+    CHECK(memcmp(&pair->input[0], &input[1], sizeof(input[0])) == 0);
+    CHECK(memcmp(&pair->input[1], &input[0], sizeof(input[0])) == 0);
     CHECK(session.composite.width == 4U && session.composite.height == 2U);
     CHECK(session.composite.pixels[0] == 2U);
     CHECK(session.composite.pixels[2] == 1U);
@@ -194,9 +221,44 @@ static bool test_partial_failure_cleanup(void)
     return true;
 }
 
+static bool test_legacy_input_fallback(void)
+{
+    uint8_t source[1] = {1U};
+    const struct dualboy_rom roms[2] = {
+        {DUALBOY_PLATFORM_GB, source, sizeof(source), "first.gb"},
+        {DUALBOY_PLATFORM_GB, source, sizeof(source), "first.gb"},
+    };
+    const struct dualboy_engine_config engine_config = {0};
+    const struct dualboy_compositor_config display = {
+        DUALBOY_MODE_DUAL,
+        DUALBOY_LAYOUT_SIDE_BY_SIDE,
+        false,
+    };
+    const struct dualboy_machine_input input[2] = {
+        {0x11U, true, 12U, 34U},
+        {0x22U, true, 56U, 78U},
+    };
+    struct dualboy_session session;
+    struct fake_pair *pair;
+    char error[128] = {0};
+
+    dualboy_session_init(&session);
+    CHECK(dualboy_session_load(&session, &fake_legacy_ops, &engine_config,
+                               roms, DUALBOY_LOAD_NORMAL, false, error,
+                               sizeof(error)));
+    pair = session.pair;
+    CHECK(dualboy_session_run(&session, input, &display, error, sizeof(error)));
+    CHECK(pair->input[0].buttons == input[0].buttons);
+    CHECK(pair->input[1].buttons == input[1].buttons);
+    CHECK(!pair->input[0].touch_active && !pair->input[1].touch_active);
+    dualboy_session_unload(&session);
+    return true;
+}
+
 int main(void)
 {
-    if (!test_same_content_and_swap() || !test_partial_failure_cleanup()) {
+    if (!test_same_content_and_swap() || !test_partial_failure_cleanup() ||
+        !test_legacy_input_fallback()) {
         return EXIT_FAILURE;
     }
     puts("session tests passed");

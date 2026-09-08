@@ -11,6 +11,10 @@
 
 #define GB_HEADER_END 0x150U
 #define GBA_HEADER_END 0xC0U
+#define NDS_HEADER_END 0x1000U
+#define NDS_UNIT_CODE_OFFSET 0x12U
+#define NDS_UNIT_CODE_DS 0x00U
+#define NDS_UNIT_CODE_DSI_ENHANCED 0x02U
 
 static const uint8_t gb_logo[48] = {
     0xCE, 0xED, 0x66, 0x66, 0xCC, 0x0D, 0x00, 0x0B,
@@ -74,12 +78,70 @@ static bool has_valid_gba_header(const uint8_t *data, size_t size)
     return checksum == data[0xBDU];
 }
 
+static uint16_t get_u16_le(const uint8_t *data)
+{
+    return (uint16_t)((uint16_t)data[0] | ((uint16_t)data[1] << 8U));
+}
+
+static uint32_t get_u32_le(const uint8_t *data)
+{
+    return (uint32_t)data[0] | ((uint32_t)data[1] << 8U) |
+           ((uint32_t)data[2] << 16U) | ((uint32_t)data[3] << 24U);
+}
+
+static uint16_t nds_crc16(const uint8_t *data, size_t size)
+{
+    uint16_t crc = UINT16_C(0xffff);
+    size_t index;
+
+    for (index = 0U; index < size; ++index) {
+        unsigned bit;
+
+        crc = (uint16_t)(crc ^ data[index]);
+        for (bit = 0U; bit < 8U; ++bit) {
+            crc = (crc & 1U) != 0U
+                      ? (uint16_t)((crc >> 1U) ^ UINT16_C(0xa001))
+                      : (uint16_t)(crc >> 1U);
+        }
+    }
+    return crc;
+}
+
+static bool nds_section_is_valid(size_t rom_size,
+                                 uint32_t offset,
+                                 uint32_t section_size)
+{
+    return offset >= UINT32_C(0x200) && section_size != 0U &&
+           (size_t)offset <= rom_size &&
+           (size_t)section_size <= rom_size - (size_t)offset;
+}
+
+static bool has_valid_nds_header(const uint8_t *data, size_t size)
+{
+    const uint32_t arm9_offset = get_u32_le(data + 0x20U);
+    const uint32_t arm9_size = get_u32_le(data + 0x2cU);
+    const uint32_t arm7_offset = get_u32_le(data + 0x30U);
+    const uint32_t arm7_size = get_u32_le(data + 0x3cU);
+
+    /* UnitCode 2 cartridges retain a DS-compatible partition and are accepted
+     * in DS mode. UnitCode 3 is DSi-exclusive and outside DualBoy's scope. */
+    return size >= NDS_HEADER_END &&
+           (data[NDS_UNIT_CODE_OFFSET] == NDS_UNIT_CODE_DS ||
+            data[NDS_UNIT_CODE_OFFSET] == NDS_UNIT_CODE_DSI_ENHANCED) &&
+           memcmp(data + 0xc0U, gba_logo, sizeof(gba_logo)) == 0 &&
+           get_u16_le(data + 0x15cU) == nds_crc16(data + 0xc0U,
+                                                  sizeof(gba_logo)) &&
+           get_u16_le(data + 0x15eU) == nds_crc16(data, 0x15eU) &&
+           nds_section_is_valid(size, arm9_offset, arm9_size) &&
+           nds_section_is_valid(size, arm7_offset, arm7_size);
+}
+
 struct dualboy_detection dualboy_detect_content(const uint8_t *data, size_t size)
 {
     struct dualboy_detection result = {
         DUALBOY_PLATFORM_INVALID,
         DUALBOY_DETECT_UNKNOWN_HEADER,
-        "content does not contain a valid GB/GBC or GBA cartridge header",
+        "content does not contain a valid GB/GBC, GBA, or NDS cartridge header",
     };
 
     if (data == NULL || size == 0U) {
@@ -96,6 +158,12 @@ struct dualboy_detection dualboy_detect_content(const uint8_t *data, size_t size
         result.platform = DUALBOY_PLATFORM_GBA;
         result.error = DUALBOY_DETECT_OK;
         result.message = "Game Boy Advance";
+        return result;
+    }
+    if (has_valid_nds_header(data, size)) {
+        result.platform = DUALBOY_PLATFORM_NDS;
+        result.error = DUALBOY_DETECT_OK;
+        result.message = "Nintendo DS";
         return result;
     }
     if (has_valid_gb_header(data, size)) {
@@ -121,6 +189,8 @@ dualboy_engine_family_for_platform(enum dualboy_platform platform)
         return DUALBOY_ENGINE_SAMEBOY;
     case DUALBOY_PLATFORM_GBA:
         return DUALBOY_ENGINE_MGBA;
+    case DUALBOY_PLATFORM_NDS:
+        return DUALBOY_ENGINE_MELONDS;
     case DUALBOY_PLATFORM_INVALID:
     default:
         return DUALBOY_ENGINE_NONE;
@@ -145,6 +215,8 @@ const char *dualboy_platform_name(enum dualboy_platform platform)
         return "GBC";
     case DUALBOY_PLATFORM_GBA:
         return "GBA";
+    case DUALBOY_PLATFORM_NDS:
+        return "NDS";
     case DUALBOY_PLATFORM_INVALID:
     default:
         return "invalid";

@@ -1,8 +1,9 @@
 # Steam Deck setup
 
-> The Linux x86-64 core has been installed and launched through RetroArch on a
-> physical Steam Deck. Controller ordering, suspend/resume, long-session save
-> reliability, and broad game compatibility still require the smoke checks below.
+> A pre-NDS Linux x86-64 core was installed and launched through RetroArch on a
+> physical Steam Deck. That result does not validate the new NDS engine. NDS
+> local wireless, multitouch, performance, suspend/resume, long-session save
+> reliability, and compatibility still require the smoke checks below.
 
 ## Build or transfer the core
 
@@ -19,6 +20,11 @@ Transfer these two files to the Deck:
 
 - `build-linux-x86_64/dualboy_libretro.so`
 - `dualboy_libretro.info`
+
+If conveying the binary to anyone else, use the CMake install tree or otherwise
+include its `share/doc/dualboy` notices and license texts plus the corresponding
+source/build offer required by GPLv3. A personal copy between your own machines
+does not replace those files in a redistributable package.
 
 Do not copy a macOS or ARM host build. On the Deck, `file
 dualboy_libretro.so` should identify an x86-64 ELF shared object.
@@ -71,21 +77,25 @@ directory, and EmuDeck configuration changes can update paths.
 3. Restart RetroArch or refresh core information.
 4. Open **Load Core** and select **DualBoy**.
 5. Open **Information > Core Information** and confirm the supported extensions
-   include `gb|gbc|gba|m3u`.
+   include `gb|gbc|gba|nds|m3u` and the license is GPLv3.
 
 An EmuDeck update does not know how to reinstall this project-specific core. Keep
 the two source files somewhere outside generated RetroArch directories so they
 can be restored after an update or configuration reset.
 
-## Optional GBA BIOS
+## BIOS and firmware
 
 DualBoy checks for `gba_bios.bin` in the active System/BIOS directory. A valid
 image is optional; GBA falls back to mGBA's normal high-level boot when it is
 absent, and an invalid file is ignored with a warning. SameBoy's open GB/GBC boot
 ROMs are embedded and need no external file.
 
-Only use firmware you are legally entitled to use. The project does not ship
-Nintendo firmware.
+NDS uses melonDS's built-in free BIOS implementation and creates an independent
+writable firmware image for each internal console. DualBoy neither reads nor
+ships Nintendo DS BIOS or firmware dumps, and arbitrary external firmware dumps
+are not accepted. Its generated firmware is persisted in the Save Files
+directory, not the System/BIOS directory; malformed or wrong-size persisted
+images are rejected before they enter the emulator.
 
 ## Launch two players
 
@@ -100,6 +110,11 @@ the ROMs:
 player-one.gba
 player-two.gba
 ```
+
+For NDS local wireless, both entries must instead be valid `.nds` cartridges;
+mixed NDS/non-NDS pairs are rejected. A normal single-ROM load duplicates the
+same NDS cartridge into two independent consoles. Download Play and an empty
+second slot are not supported.
 
 Load the M3U as normal content. It must contain exactly two local cartridge paths.
 Relative paths are resolved from the playlist's directory. Do not use `~`,
@@ -124,28 +139,52 @@ RetroArch port 1 drives DualBoy machine 0 and port 2 drives machine 1. The Deck'
 built-in controls can occupy one port; the other player needs another controller
 or a deliberately configured second input device.
 
+Each NDS machine always shows its 256x192 top screen above its 256x192 bottom
+touch screen. RetroArch pointer contacts are accepted only inside displayed
+bottom-screen rectangles. If the active input driver exposes multiple pointer
+indices, contacts on the two bottom screens can drive both consoles at once; this
+must be verified on the installed Deck/input-driver combination. Hold R3 and use
+that player's right analog stick for an independent controller stylus fallback.
+
 Useful core options are:
 
 - **Display Mode = Dual**
 - **Dual-screen Layout = Side by Side** for the Deck's landscape screen
-- **Link Cable = Enabled**
+- **Local Link = Enabled**
 - **Swap Players/Screens = Enabled** when physical port order is reversed
 - **Audio Source = Player 1** or **Disabled**
 
 Swap changes controller assignment and screen placement together. GBA link
-changes reset both machines, so configure the cable before beginning play. The
-MVP emits only Player 1 audio.
+changes reset both machines, so configure the cable before beginning play. NDS
+link changes dynamically: disabling it disconnects local wireless without a
+content reload. Fast-forward is available until both NDS consoles join the
+enabled transport, then DualBoy requests a frontend override to inhibit it; the
+override is released when either console leaves or link is disabled. The MVP
+emits only Player 1 audio. Enable **Local Link** before entering a multiplayer
+lobby; toggling it off during play intentionally disconnects the session.
+
+NDS manual states, rewind, and runahead are unsupported because the two machine
+states do not contain the pair-owned `LocalMP` queues. Save a per-core override
+for DualBoy containing exactly:
+
+```ini
+rewind_enable = "false"
+run_ahead_enabled = "false"
+```
 
 ## Saves and backups
 
 Confirm the active Save Files directory before the first run. In normal same-ROM
 mode, expect machine 0's canonical `game.srm` and machine 1's
 `game.srm.2`; RTC files use `.rtc` and `.rtc.2`. GBA also uses canonical
-`.srm` files. M3U saves are named from each cartridge path, not the playlist.
+`.srm` files. NDS adds `game.firmware.bin` and `game.firmware.bin.2` for the two
+independent writable firmware images. M3U saves are named from each cartridge
+path, not the playlist.
 
 Back up:
 
-- `*.srm`, `*.srm.2`, `*.rtc`, and `*.rtc.2` from Save Files;
+- `*.srm`, `*.srm.2`, `*.rtc`, `*.rtc.2`, `*.firmware.bin`, and
+  `*.firmware.bin.2` from Save Files;
 - RetroArch save-state files from the separately configured Save States
   directory; and
 - the M3U when its relative layout matters.
@@ -169,9 +208,15 @@ Before trusting a long session:
 3. Toggle **Swap Players/Screens** and verify both input and placement swap.
 4. Create distinct in-game battery progress on both machines, cleanly unload
    content, reload, and verify both.
-5. Create a RetroArch save state, advance both machines, load it, and verify
-   volatile state rewinds together while battery progress remains intact.
-6. Inspect the RetroArch log for a link watchdog, save-lock, or write error.
+5. For GB/GBC/GBA, create a RetroArch save state, advance both machines, load it,
+   and verify volatile state rewinds together while battery progress remains
+   intact. Do not perform this step for NDS.
+6. For NDS, enter a local-wireless lobby using source-built or explicitly
+   redistributable test software, verify both peers exchange data, then toggle
+   **Local Link** off and on without reloading.
+7. For NDS, place two simultaneous pointer contacts on different displayed
+   bottom screens and record the active RetroArch/input driver and result.
+8. Inspect the RetroArch log for a worker, transport, save-lock, or write error.
 
 Passing the repository's automated harness does not replace this real-frontend
 check.
@@ -190,6 +235,11 @@ check.
   `.dualboy.lock`.
 - **GBA link option appears to restart play:** this reset is intentional when
   changing the mGBA link topology.
+- **NDS save states are unavailable:** this is intentional; disable rewind and
+  runahead with the override above and use in-game battery saves.
+- **NDS fast-forward stops in a multiplayer lobby:** this is the intended
+  transport-safety override. Leave the lobby or disable **Local Link** to release
+  it.
 
 Reference documentation:
 

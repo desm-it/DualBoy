@@ -57,6 +57,7 @@ static bool test_stems_and_save_paths(void)
 {
     struct dualboy_save_paths paths;
     char output[DUALBOY_PATH_CAPACITY];
+    char long_directory[DUALBOY_PATH_CAPACITY];
     char tiny[5];
 
     CHECK(dualboy_content_stem("/roms/Pokemon Red.gb", output,
@@ -103,21 +104,37 @@ static bool test_stems_and_save_paths(void)
           DUALBOY_PERSISTENCE_PATH_TOO_LONG);
 
     CHECK(dualboy_build_save_paths("/saves", "/one/red.gb", "/two/blue.gbc",
-                                   &paths) == DUALBOY_PERSISTENCE_OK);
+                                   true, &paths) == DUALBOY_PERSISTENCE_OK);
     CHECK(strcmp(paths.sram[0], "/saves/red.srm") == 0);
     CHECK(strcmp(paths.sram[1], "/saves/blue.srm") == 0);
     CHECK(strcmp(paths.rtc[0], "/saves/red.rtc") == 0);
     CHECK(strcmp(paths.rtc[1], "/saves/blue.rtc") == 0);
+    CHECK(strcmp(paths.firmware[0], "/saves/red.firmware.bin") == 0);
+    CHECK(strcmp(paths.firmware[1], "/saves/blue.firmware.bin") == 0);
     CHECK(!paths.second_uses_collision_suffix);
 
     /* Different source paths still collide after save-directory derivation. */
     CHECK(dualboy_build_save_paths("/saves", "/one/game.gb", "/two/game.gbc",
-                                   &paths) == DUALBOY_PERSISTENCE_OK);
+                                   true, &paths) == DUALBOY_PERSISTENCE_OK);
     CHECK(strcmp(paths.sram[0], "/saves/game.srm") == 0);
     CHECK(strcmp(paths.sram[1], "/saves/game.srm.2") == 0);
     CHECK(strcmp(paths.rtc[0], "/saves/game.rtc") == 0);
     CHECK(strcmp(paths.rtc[1], "/saves/game.rtc.2") == 0);
+    CHECK(strcmp(paths.firmware[0], "/saves/game.firmware.bin") == 0);
+    /* The machine suffix follows the complete firmware extension, matching
+     * the established .srm.2 and .rtc.2 collision convention. */
+    CHECK(strcmp(paths.firmware[1], "/saves/game.firmware.bin.2") == 0);
     CHECK(paths.second_uses_collision_suffix);
+
+    /* An unused NDS-only suffix must not reject a valid non-NDS save path. */
+    memset(long_directory, 'd', DUALBOY_PATH_CAPACITY - 15U);
+    long_directory[DUALBOY_PATH_CAPACITY - 15U] = '\0';
+    CHECK(dualboy_build_save_paths(long_directory, "a.gb", "b.gb", false,
+                                   &paths) == DUALBOY_PERSISTENCE_OK);
+    CHECK(paths.firmware[0][0] == '\0' && paths.firmware[1][0] == '\0');
+    CHECK(dualboy_build_save_paths(long_directory, "a.nds", "b.nds", true,
+                                   &paths) ==
+          DUALBOY_PERSISTENCE_PATH_TOO_LONG);
 
     CHECK(dualboy_legacy_sav_path("/saves/game.srm", output,
                                   sizeof(output)) ==

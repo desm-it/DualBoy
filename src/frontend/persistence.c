@@ -148,12 +148,15 @@ dualboy_join_save_path(const char *save_directory,
 }
 
 static enum dualboy_persistence_result
-build_one_pair(const char *save_directory,
-               const char *stem,
-               const char *sram_suffix,
-               const char *rtc_suffix,
-               char *sram,
-               char *rtc)
+build_one_set(const char *save_directory,
+              const char *stem,
+              const char *sram_suffix,
+              const char *rtc_suffix,
+              const char *firmware_suffix,
+              bool include_firmware,
+              char *sram,
+              char *rtc,
+              char *firmware)
 {
     enum dualboy_persistence_result result;
 
@@ -162,17 +165,27 @@ build_one_pair(const char *save_directory,
     if (result != DUALBOY_PERSISTENCE_OK) {
         return result;
     }
-    return dualboy_join_save_path(save_directory, stem, rtc_suffix,
-                                  rtc, DUALBOY_PATH_CAPACITY);
+    result = dualboy_join_save_path(save_directory, stem, rtc_suffix,
+                                    rtc, DUALBOY_PATH_CAPACITY);
+    if (result != DUALBOY_PERSISTENCE_OK) {
+        return result;
+    }
+    if (!include_firmware) {
+        firmware[0] = '\0';
+        return DUALBOY_PERSISTENCE_OK;
+    }
+    return dualboy_join_save_path(save_directory, stem, firmware_suffix,
+                                  firmware, DUALBOY_PATH_CAPACITY);
 }
 
 enum dualboy_persistence_result
 dualboy_build_save_paths(const char *save_directory,
                          const char *first_content_path,
                          const char *second_content_path,
+                         bool include_firmware,
                          struct dualboy_save_paths *paths)
 {
-    struct dualboy_save_paths candidate = {{{0}}, {{0}}, false};
+    struct dualboy_save_paths candidate = {0};
     char stems[DUALBOY_MACHINE_COUNT][DUALBOY_PATH_CAPACITY];
     char second_unsuffixed[DUALBOY_PATH_CAPACITY];
     enum dualboy_persistence_result result;
@@ -190,8 +203,9 @@ dualboy_build_save_paths(const char *save_directory,
     if (result != DUALBOY_PERSISTENCE_OK) {
         return result;
     }
-    result = build_one_pair(save_directory, stems[0], ".srm", ".rtc",
-                            candidate.sram[0], candidate.rtc[0]);
+    result = build_one_set(save_directory, stems[0], ".srm", ".rtc",
+                           ".firmware.bin", include_firmware, candidate.sram[0],
+                           candidate.rtc[0], candidate.firmware[0]);
     if (result != DUALBOY_PERSISTENCE_OK) {
         return result;
     }
@@ -204,12 +218,16 @@ dualboy_build_save_paths(const char *save_directory,
 
     candidate.second_uses_collision_suffix =
         strcmp(candidate.sram[0], second_unsuffixed) == 0;
-    result = build_one_pair(save_directory, stems[1],
-                            candidate.second_uses_collision_suffix
-                                ? ".srm.2" : ".srm",
-                            candidate.second_uses_collision_suffix
-                                ? ".rtc.2" : ".rtc",
-                            candidate.sram[1], candidate.rtc[1]);
+    result = build_one_set(save_directory, stems[1],
+                           candidate.second_uses_collision_suffix
+                               ? ".srm.2" : ".srm",
+                           candidate.second_uses_collision_suffix
+                               ? ".rtc.2" : ".rtc",
+                           candidate.second_uses_collision_suffix
+                               ? ".firmware.bin.2" : ".firmware.bin",
+                           include_firmware,
+                           candidate.sram[1], candidate.rtc[1],
+                           candidate.firmware[1]);
     if (result != DUALBOY_PERSISTENCE_OK) {
         return result;
     }

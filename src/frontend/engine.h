@@ -20,12 +20,14 @@ enum dualboy_platform {
     DUALBOY_PLATFORM_GB,
     DUALBOY_PLATFORM_GBC,
     DUALBOY_PLATFORM_GBA,
+    DUALBOY_PLATFORM_NDS,
 };
 
 enum dualboy_engine_family {
     DUALBOY_ENGINE_NONE = 0,
     DUALBOY_ENGINE_SAMEBOY,
     DUALBOY_ENGINE_MGBA,
+    DUALBOY_ENGINE_MELONDS,
 };
 
 enum dualboy_log_level {
@@ -38,6 +40,8 @@ enum dualboy_log_level {
 enum dualboy_memory_kind {
     DUALBOY_MEMORY_SAVE_RAM = 0,
     DUALBOY_MEMORY_RTC,
+    DUALBOY_MEMORY_FIRMWARE,
+    DUALBOY_MEMORY_KIND_COUNT,
 };
 
 enum dualboy_button {
@@ -80,6 +84,13 @@ struct dualboy_video_frame {
     size_t pitch;
 };
 
+struct dualboy_machine_input {
+    uint16_t buttons;
+    bool touch_active;
+    uint16_t touch_x;
+    uint16_t touch_y;
+};
+
 /*
  * `pair` is adapter-private and owns every engine allocation. The frontend calls
  * load_rom exactly once for each machine after create_pair, then set_link. Every
@@ -103,13 +114,23 @@ struct dualboy_engine_ops {
                      char *error,
                      size_t error_size);
     void (*reset)(void *pair);
+    /* Legacy button-only adapters may implement set_input. New adapters should
+     * consume the complete per-machine value through set_machine_input. */
     void (*set_input)(void *pair, unsigned machine, uint16_t buttons);
+    void (*set_machine_input)(void *pair,
+                              unsigned machine,
+                              const struct dualboy_machine_input *input);
+    /* This is a synchronous ownership boundary even for adapters backed by
+     * worker threads. On every return, including failure, workers launched for
+     * the frame must have stopped accessing pair-owned video, audio,
+     * persistence, and engine state. */
     bool (*run_frame)(void *pair, char *error, size_t error_size);
     bool (*video_frame)(void *pair,
                         unsigned machine,
                         struct dualboy_video_frame *frame);
 
     unsigned (*audio_sample_rate)(const void *pair);
+    double (*frame_rate)(const void *pair);
     size_t (*read_audio)(void *pair,
                          int16_t *interleaved_stereo,
                          size_t max_frames);
@@ -129,6 +150,17 @@ struct dualboy_engine_ops {
                                      enum dualboy_memory_kind kind,
                                      bool *known,
                                      size_t *size);
+    /* Optional validation for untrusted bytes read from disk. This runs before
+     * the persistence layer copies a region into live engine memory, so an
+     * engine may reject malformed private formats without exposing them to
+     * upstream code. */
+    bool (*validate_persistent_memory)(const void *pair,
+                                       unsigned machine,
+                                       enum dualboy_memory_kind kind,
+                                       const void *data,
+                                       size_t size,
+                                       char *error,
+                                       size_t error_size);
     bool (*memory_dirty)(const void *pair, unsigned machine);
     void (*clear_memory_dirty)(void *pair, unsigned machine);
 
@@ -152,11 +184,21 @@ struct dualboy_engine_ops {
                              const void *data,
                              size_t size);
 
+    /* True only while both machines are actively joined to an engine transport
+     * that requires real-time pacing. The Libretro layer owns frontend policy. */
+    bool (*link_transport_active)(const void *pair);
+
     void (*destroy_pair)(void *pair);
+
+    /* Optional notification after the persistence layer has populated every
+     * stable memory region. Engines that cache firmware-derived runtime state
+     * may rebuild it here before the first emulated frame. */
+    void (*persistent_memory_loaded)(void *pair);
 };
 
 const struct dualboy_engine_ops *dualboy_sameboy_engine(void);
 const struct dualboy_engine_ops *dualboy_mgba_engine(void);
+const struct dualboy_engine_ops *dualboy_melonds_engine(void);
 
 #ifdef __cplusplus
 }

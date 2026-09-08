@@ -6,6 +6,11 @@
 
 #include <libretro.h>
 
+#if defined(DUALBOY_INTERNAL_TEST)
+#include "engines/melonds/nds_adapter_test.h"
+void *dualboy_libretro_debug_engine_pair(void);
+#endif
+
 #include <dirent.h>
 #include <dlfcn.h>
 #include <stdarg.h>
@@ -19,6 +24,9 @@
 
 #define TEST_GB_ROM_SIZE 0x8000U
 #define TEST_GBA_ROM_SIZE 0x8000U
+#define TEST_NDS_ROM_SIZE 0x10000U
+#define TEST_NDS_ARM9_OFFSET 0x8000U
+#define TEST_NDS_ARM7_OFFSET 0x8004U
 #define TEST_GBA_CODE_OFFSET 0xC0U
 #define TEST_GBA_IO_LITERAL 0x100U
 #define TEST_GBA_SRAM_LITERAL 0x104U
@@ -32,6 +40,7 @@
 #define TEST_SLOT1_RTC_ID 0x101U
 #define TEST_SLOT2_SRAM_ID 0x200U
 #define TEST_SLOT2_RTC_ID 0x201U
+#define TEST_POINTER_CONTACT_LIMIT 16U
 
 #define REQUIRE(expression)                                                     \
     do {                                                                        \
@@ -98,6 +107,12 @@ struct core_api {
     get_memory_size_fn get_memory_size;
 };
 
+struct pointer_contact {
+    int16_t x;
+    int16_t y;
+    bool pressed;
+};
+
 struct frontend_fixture {
     char directory[TEST_PATH_CAPACITY];
     const struct retro_subsystem_info *subsystems;
@@ -111,6 +126,8 @@ struct frontend_fixture {
     const char *swap;
     const char *audio_source;
     uint16_t input_masks[2];
+    int16_t right_analog[2][2];
+    struct pointer_contact pointer_contacts[TEST_POINTER_CONTACT_LIMIT];
     struct retro_game_geometry geometry;
     unsigned subsystem_calls;
     unsigned content_override_calls;
@@ -131,6 +148,10 @@ struct frontend_fixture {
     size_t audio_frames;
     unsigned input_poll_calls;
     unsigned input_state_calls[2];
+    unsigned analog_input_calls[2];
+    unsigned pointer_input_calls;
+    unsigned fastforward_override_calls;
+    struct retro_fastforwarding_override fastforward_override;
     unsigned log_calls;
     unsigned error_log_calls;
     char last_log[TEST_LOG_CAPACITY];
@@ -176,6 +197,7 @@ static const uint8_t test_gba_logo[156] = {
     0x21U, 0xD4U, 0xF8U, 0x07U,
 };
 
+#if !defined(DUALBOY_INTERNAL_TEST)
 static void *load_symbol(void *handle, const char *name)
 {
     void *symbol;
@@ -208,10 +230,39 @@ static void bind_function(void *destination,
     bind_function(&(api_)->member_, sizeof((api_)->member_),                   \
                   load_symbol(handle, "retro_" #member_),                     \
                   "retro_" #member_)
+#endif
 
 static void load_core_api(void *handle, struct core_api *api)
 {
     memset(api, 0, sizeof(*api));
+#if defined(DUALBOY_INTERNAL_TEST)
+    (void)handle;
+    api->set_environment = retro_set_environment;
+    api->set_video_refresh = retro_set_video_refresh;
+    api->set_audio_sample = retro_set_audio_sample;
+    api->set_audio_sample_batch = retro_set_audio_sample_batch;
+    api->set_input_poll = retro_set_input_poll;
+    api->set_input_state = retro_set_input_state;
+    api->init = retro_init;
+    api->deinit = retro_deinit;
+    api->api_version = retro_api_version;
+    api->get_system_info = retro_get_system_info;
+    api->get_system_av_info = retro_get_system_av_info;
+    api->set_controller_port_device = retro_set_controller_port_device;
+    api->reset = retro_reset;
+    api->run = retro_run;
+    api->serialize_size = retro_serialize_size;
+    api->serialize = retro_serialize;
+    api->unserialize = retro_unserialize;
+    api->cheat_reset = retro_cheat_reset;
+    api->cheat_set = retro_cheat_set;
+    api->load_game = retro_load_game;
+    api->load_game_special = retro_load_game_special;
+    api->unload_game = retro_unload_game;
+    api->get_region = retro_get_region;
+    api->get_memory_data = retro_get_memory_data;
+    api->get_memory_size = retro_get_memory_size;
+#else
     BIND(api, set_environment);
     BIND(api, set_video_refresh);
     BIND(api, set_audio_sample);
@@ -237,9 +288,12 @@ static void load_core_api(void *handle, struct core_api *api)
     BIND(api, get_region);
     BIND(api, get_memory_data);
     BIND(api, get_memory_size);
+#endif
 }
 
+#if !defined(DUALBOY_INTERNAL_TEST)
 #undef BIND
+#endif
 
 static const char *option_value(const char *key)
 {
@@ -361,6 +415,14 @@ static bool RETRO_CALLCONV environment_callback(unsigned command, void *data)
             frontend.geometry = *(const struct retro_game_geometry *)data;
             ++frontend.geometry_calls;
             return true;
+        case RETRO_ENVIRONMENT_SET_FASTFORWARDING_OVERRIDE:
+            if (data == NULL) {
+                return false;
+            }
+            frontend.fastforward_override =
+                *(const struct retro_fastforwarding_override *)data;
+            ++frontend.fastforward_override_calls;
+            return true;
         default:
             return false;
     }
@@ -454,13 +516,36 @@ static int16_t RETRO_CALLCONV input_state_callback(unsigned port,
                                                    unsigned index,
                                                    unsigned id)
 {
-    if (port >= 2U || device != RETRO_DEVICE_JOYPAD || index != 0U ||
-        id != RETRO_DEVICE_ID_JOYPAD_MASK) {
-        frontend.input_contract_ok = false;
-        return 0;
+    if (port < 2U && device == RETRO_DEVICE_JOYPAD && index == 0U &&
+        id == RETRO_DEVICE_ID_JOYPAD_MASK) {
+        ++frontend.input_state_calls[port];
+        return (int16_t)frontend.input_masks[port];
     }
-    ++frontend.input_state_calls[port];
-    return (int16_t)frontend.input_masks[port];
+    if (port < 2U && device == RETRO_DEVICE_ANALOG &&
+        index == RETRO_DEVICE_INDEX_ANALOG_RIGHT &&
+        (id == RETRO_DEVICE_ID_ANALOG_X ||
+         id == RETRO_DEVICE_ID_ANALOG_Y)) {
+        ++frontend.analog_input_calls[port];
+        return frontend.right_analog[port][id];
+    }
+    if (port == 0U && device == RETRO_DEVICE_POINTER &&
+        index < TEST_POINTER_CONTACT_LIMIT) {
+        const struct pointer_contact *contact =
+            &frontend.pointer_contacts[index];
+
+        ++frontend.pointer_input_calls;
+        if (id == RETRO_DEVICE_ID_POINTER_X) {
+            return contact->x;
+        }
+        if (id == RETRO_DEVICE_ID_POINTER_Y) {
+            return contact->y;
+        }
+        if (id == RETRO_DEVICE_ID_POINTER_PRESSED) {
+            return contact->pressed ? 1 : 0;
+        }
+    }
+    frontend.input_contract_ok = false;
+    return 0;
 }
 
 static void reset_observations(void)
@@ -479,6 +564,12 @@ static void reset_observations(void)
     frontend.input_poll_calls = 0U;
     frontend.input_state_calls[0] = 0U;
     frontend.input_state_calls[1] = 0U;
+    frontend.analog_input_calls[0] = 0U;
+    frontend.analog_input_calls[1] = 0U;
+    frontend.pointer_input_calls = 0U;
+    frontend.fastforward_override_calls = 0U;
+    memset(&frontend.fastforward_override, 0,
+           sizeof(frontend.fastforward_override));
     frontend.video_contract_ok = true;
     frontend.audio_contract_ok = true;
     frontend.input_contract_ok = true;
@@ -621,6 +712,89 @@ static void put_u32le(uint8_t *destination, uint32_t value)
     destination[3] = (uint8_t)(value >> 24U);
 }
 
+static void put_u16le(uint8_t *destination, uint16_t value)
+{
+    destination[0] = (uint8_t)value;
+    destination[1] = (uint8_t)(value >> 8U);
+}
+
+static uint16_t nds_crc16(const uint8_t *data, size_t size)
+{
+    uint16_t crc = UINT16_C(0xffff);
+    size_t index;
+
+    for (index = 0U; index < size; ++index) {
+        unsigned bit;
+
+        crc = (uint16_t)(crc ^ data[index]);
+        for (bit = 0U; bit < 8U; ++bit) {
+            crc = (crc & 1U) != 0U
+                      ? (uint16_t)((crc >> 1U) ^ UINT16_C(0xa001))
+                      : (uint16_t)(crc >> 1U);
+        }
+    }
+    return crc;
+}
+
+/* A source-generated NDS cartridge containing one original ARM branch loop
+ * for each CPU. The fixed logo is the hardware-mandated header data already
+ * used by the generated GBA fixture; no commercial code, BIOS, or firmware is
+ * present. */
+static void make_test_nds_rom(uint8_t *rom, uint8_t variant)
+{
+    memset(rom, 0, TEST_NDS_ROM_SIZE);
+    memcpy(rom, "DUALBOY NDS ", 12U);
+    memcpy(rom + 0x0CU, "ZZZE", 4U);
+    rom[0x0FU] = variant;
+    memcpy(rom + 0x10U, "DB", 2U);
+    put_u32le(rom + 0x20U, TEST_NDS_ARM9_OFFSET);
+    put_u32le(rom + 0x24U, UINT32_C(0x02000000));
+    put_u32le(rom + 0x28U, UINT32_C(0x02000000));
+    put_u32le(rom + 0x2CU, UINT32_C(4));
+    put_u32le(rom + 0x30U, TEST_NDS_ARM7_OFFSET);
+    put_u32le(rom + 0x34U, UINT32_C(0x03800000));
+    put_u32le(rom + 0x38U, UINT32_C(0x03800000));
+    put_u32le(rom + 0x3CU, UINT32_C(36));
+    put_u32le(rom + 0x80U, TEST_NDS_ROM_SIZE);
+    put_u32le(rom + 0x84U, UINT32_C(0x4000));
+    memcpy(rom + 0xC0U, test_gba_logo, sizeof(test_gba_logo));
+    put_u16le(rom + 0x15CU,
+              nds_crc16(rom + 0xC0U, sizeof(test_gba_logo)));
+    put_u16le(rom + 0x15EU, nds_crc16(rom, 0x15EU));
+    put_u32le(rom + TEST_NDS_ARM9_OFFSET, UINT32_C(0xeafffffe));
+
+    /* ARM7 enables POWCNT2 Wi-Fi power, clears W_POWER_US, and remains live.
+     * Those two hardware writes make upstream melonDS call MP_Begin for each
+     * instance without bypassing its emulated Wi-Fi boundary. */
+    put_u32le(rom + TEST_NDS_ARM7_OFFSET + 0U,
+              UINT32_C(0xe59f0014)); /* ldr r0, [pc, #20] */
+    put_u32le(rom + TEST_NDS_ARM7_OFFSET + 4U,
+              UINT32_C(0xe3a01003)); /* mov r1, #3 */
+    put_u32le(rom + TEST_NDS_ARM7_OFFSET + 8U,
+              UINT32_C(0xe1c010b0)); /* strh r1, [r0] */
+    put_u32le(rom + TEST_NDS_ARM7_OFFSET + 12U,
+              UINT32_C(0xe59f000c)); /* ldr r0, [pc, #12] */
+    put_u32le(rom + TEST_NDS_ARM7_OFFSET + 16U,
+              UINT32_C(0xe3a01000)); /* mov r1, #0 */
+    put_u32le(rom + TEST_NDS_ARM7_OFFSET + 20U,
+              UINT32_C(0xe1c010b0)); /* strh r1, [r0] */
+    put_u32le(rom + TEST_NDS_ARM7_OFFSET + 24U,
+              UINT32_C(0xeafffffe)); /* b . */
+    put_u32le(rom + TEST_NDS_ARM7_OFFSET + 28U,
+              UINT32_C(0x04000304)); /* POWCNT2 */
+    put_u32le(rom + TEST_NDS_ARM7_OFFSET + 32U,
+              UINT32_C(0x04800036)); /* W_POWER_US */
+}
+
+static int16_t pointer_coordinate(unsigned pixel, unsigned extent)
+{
+    const int32_t normalized =
+        (int32_t)(((uint64_t)pixel * UINT32_C(0x10000)) / extent) -
+        INT32_C(0x8000);
+
+    return (int16_t)normalized;
+}
+
 /* An original ARM-state program that selects mode 3, writes a marker to SRAM,
  * paints one pixel, and then remains live. The SRAM signature is the public
  * cartridge convention mGBA uses to select the save device. */
@@ -694,15 +868,15 @@ static bool validate_registration(const struct core_api *api)
     REQUIRE(strcmp(info.library_name, "DualBoy") == 0);
     REQUIRE(info.library_version != NULL && info.library_version[0] != '\0');
     REQUIRE(info.valid_extensions != NULL);
-    REQUIRE(strcmp(info.valid_extensions, "gb|gbc|gba|m3u") == 0);
+    REQUIRE(strcmp(info.valid_extensions, "gb|gbc|gba|nds|m3u") == 0);
     REQUIRE(!info.need_fullpath && !info.block_extract);
 
     memset(&av, 0, sizeof(av));
     api->get_system_av_info(&av);
     REQUIRE(av.geometry.base_width == 320U);
     REQUIRE(av.geometry.base_height == 144U);
-    REQUIRE(av.geometry.max_width == 480U);
-    REQUIRE(av.geometry.max_height == 320U);
+    REQUIRE(av.geometry.max_width == 512U);
+    REQUIRE(av.geometry.max_height == 768U);
     REQUIRE(av.timing.fps > 59.0 && av.timing.fps < 60.0);
     REQUIRE(av.timing.sample_rate == 48000.0);
 
@@ -727,7 +901,7 @@ static bool validate_registration(const struct core_api *api)
 
         REQUIRE(rom->required);
         REQUIRE(!rom->need_fullpath && !rom->block_extract);
-        REQUIRE(strcmp(rom->valid_extensions, "gb|gbc|gba") == 0);
+        REQUIRE(strcmp(rom->valid_extensions, "gb|gbc|gba|nds") == 0);
         REQUIRE(rom->memory != NULL && rom->num_memory == 2U);
         REQUIRE(strcmp(rom->memory[0].extension, "srm") == 0);
         REQUIRE(strcmp(rom->memory[1].extension, "rtc") == 0);
@@ -744,17 +918,19 @@ static bool validate_registration(const struct core_api *api)
     REQUIRE(frontend.content_overrides[1].extensions == NULL);
 
     REQUIRE(frontend.controllers != NULL);
-    REQUIRE(frontend.controllers[0].num_types == 1U);
-    REQUIRE(frontend.controllers[1].num_types == 1U);
+    REQUIRE(frontend.controllers[0].num_types == 2U);
+    REQUIRE(frontend.controllers[1].num_types == 2U);
     REQUIRE(frontend.controllers[0].types[0].id == RETRO_DEVICE_JOYPAD);
     REQUIRE(frontend.controllers[1].types[0].id == RETRO_DEVICE_JOYPAD);
+    REQUIRE(frontend.controllers[0].types[1].id == RETRO_DEVICE_ANALOG);
+    REQUIRE(frontend.controllers[1].types[1].id == RETRO_DEVICE_ANALOG);
     REQUIRE(frontend.controllers[2].types == NULL);
     REQUIRE(frontend.input_descriptors != NULL);
     while (descriptor_count < 64U &&
            frontend.input_descriptors[descriptor_count].description != NULL) {
         ++descriptor_count;
     }
-    REQUIRE(descriptor_count == 20U);
+    REQUIRE(descriptor_count == 30U);
 
     REQUIRE(frontend.options_v2 != NULL);
     REQUIRE(frontend.options_v2->categories != NULL);
@@ -775,6 +951,10 @@ static bool validate_registration(const struct core_api *api)
         REQUIRE(definition->values[0].value != NULL);
     }
     REQUIRE(frontend.options_v2->definitions[5].key == NULL);
+    REQUIRE(strcmp(frontend.options_v2->definitions[2].desc, "Local Link") ==
+            0);
+    REQUIRE(strstr(frontend.options_v2->definitions[2].info,
+                   "local wireless") != NULL);
     REQUIRE(api->get_region() == RETRO_REGION_NTSC);
     return true;
 }
@@ -789,8 +969,8 @@ static bool validate_loaded_av(const struct core_api *api,
     api->get_system_av_info(&av);
     REQUIRE(av.geometry.base_width == width);
     REQUIRE(av.geometry.base_height == height);
-    REQUIRE(av.geometry.max_width == 480U);
-    REQUIRE(av.geometry.max_height == 320U);
+    REQUIRE(av.geometry.max_width == 512U);
+    REQUIRE(av.geometry.max_height == 768U);
     REQUIRE(av.geometry.aspect_ratio > 0.0F);
     REQUIRE(av.timing.sample_rate == 48000.0);
     return true;
@@ -1140,6 +1320,155 @@ static bool test_gba_load(struct core_api *api, const uint8_t *rom)
     return true;
 }
 
+static bool test_nds_load_paths(struct core_api *api,
+                                const uint8_t *first_rom,
+                                const uint8_t *second_rom)
+{
+    const unsigned subsystem_id = frontend.subsystems[0].id;
+    const struct retro_game_info normal = {
+        "/virtual/dualboy.nds", first_rom, TEST_NDS_ROM_SIZE, NULL,
+    };
+    const struct retro_game_info pair[2] = {
+        {"/virtual/nds-player-one.nds", first_rom, TEST_NDS_ROM_SIZE, NULL},
+        {"/virtual/nds-player-two.nds", second_rom, TEST_NDS_ROM_SIZE, NULL},
+    };
+    char first_path[TEST_PATH_CAPACITY];
+    char second_path[TEST_PATH_CAPACITY];
+    char playlist_path[TEST_PATH_CAPACITY];
+    char playlist[TEST_PATH_CAPACITY * 2U + 4U];
+    struct retro_game_info playlist_game;
+    int playlist_length;
+    unsigned geometry_calls;
+
+    set_default_options();
+    reset_observations();
+    REQUIRE(api->load_game(&normal));
+    REQUIRE(validate_loaded_av(api, 512U, 384U));
+    {
+        struct retro_system_av_info av;
+        memset(&av, 0, sizeof(av));
+        api->get_system_av_info(&av);
+        REQUIRE(av.timing.fps > 59.82 && av.timing.fps < 59.83);
+    }
+    REQUIRE(api->serialize_size() == 0U);
+    REQUIRE(api->get_memory_data(RETRO_MEMORY_SAVE_RAM) == NULL);
+    REQUIRE(api->get_memory_size(RETRO_MEMORY_SAVE_RAM) == 0U);
+    REQUIRE(api->get_memory_data(TEST_SLOT1_SRAM_ID) == NULL);
+    REQUIRE(api->get_memory_data(TEST_SLOT2_SRAM_ID) == NULL);
+
+    /* Two simultaneous contacts occupy the two displayed bottom screens.
+     * The adapter test independently verifies the resulting per-machine touch
+     * values; this ABI test verifies successive Libretro pointer polling. */
+    frontend.pointer_contacts[0].x = pointer_coordinate(64U, 512U);
+    frontend.pointer_contacts[0].y = pointer_coordinate(242U, 384U);
+    frontend.pointer_contacts[0].pressed = true;
+    frontend.pointer_contacts[1].x = pointer_coordinate(384U, 512U);
+    frontend.pointer_contacts[1].y = pointer_coordinate(292U, 384U);
+    frontend.pointer_contacts[1].pressed = true;
+    api->run();
+    REQUIRE(frontend.video_calls == 1U);
+    REQUIRE(frontend.video_width == 512U && frontend.video_height == 384U);
+    REQUIRE(frontend.video_pitch == 512U * sizeof(uint32_t));
+    REQUIRE(frontend.pointer_input_calls >= 7U);
+    REQUIRE(frontend.fastforward_override_calls == 1U);
+    REQUIRE(frontend.fastforward_override.ratio == 1.0F);
+    REQUIRE(!frontend.fastforward_override.fastforward);
+    REQUIRE(frontend.fastforward_override.inhibit_toggle);
+    REQUIRE(frontend.video_contract_ok && frontend.audio_contract_ok &&
+            frontend.input_contract_ok);
+#if defined(DUALBOY_INTERNAL_TEST)
+    {
+        void *pair_handle = dualboy_libretro_debug_engine_pair();
+        bool active[2] = {false, false};
+        uint16_t x[2] = {0U, 0U};
+        uint16_t y[2] = {0U, 0U};
+
+        REQUIRE(pair_handle != NULL);
+        REQUIRE(dualboy_melonds_debug_live_instances(pair_handle) == 2U);
+        REQUIRE(dualboy_melonds_debug_nds_object(pair_handle, 0U) != NULL);
+        REQUIRE(dualboy_melonds_debug_nds_object(pair_handle, 1U) != NULL);
+        REQUIRE(dualboy_melonds_debug_nds_object(pair_handle, 0U) !=
+                dualboy_melonds_debug_nds_object(pair_handle, 1U));
+        REQUIRE(dualboy_melonds_debug_last_touch(
+            pair_handle, 0U, &active[0], &x[0], &y[0]));
+        REQUIRE(dualboy_melonds_debug_last_touch(
+            pair_handle, 1U, &active[1], &x[1], &y[1]));
+        REQUIRE(active[0] && active[1]);
+        REQUIRE(x[0] == 64U && y[0] == 49U);
+        REQUIRE(x[1] == 128U && y[1] == 99U);
+        REQUIRE(dualboy_melonds_debug_tsc_touch(
+            pair_handle, 0U, &x[0], &y[0]));
+        REQUIRE(dualboy_melonds_debug_tsc_touch(
+            pair_handle, 1U, &x[1], &y[1]));
+        REQUIRE(x[0] == 64U && y[0] == 49U);
+        REQUIRE(x[1] == 128U && y[1] == 99U);
+    }
+#endif
+
+    frontend.link = "disabled";
+    frontend.option_updated = true;
+    api->run();
+    REQUIRE(frontend.fastforward_override_calls == 2U);
+    REQUIRE(!frontend.fastforward_override.inhibit_toggle);
+    frontend.link = "enabled";
+    frontend.option_updated = true;
+    api->run();
+    REQUIRE(frontend.fastforward_override_calls == 3U);
+    REQUIRE(frontend.fastforward_override.inhibit_toggle);
+
+    frontend.pointer_contacts[0].pressed = false;
+    frontend.pointer_contacts[1].pressed = false;
+    frontend.layout = "top_bottom";
+    frontend.option_updated = true;
+    geometry_calls = frontend.geometry_calls;
+    api->run();
+    REQUIRE(frontend.video_width == 256U && frontend.video_height == 768U);
+    REQUIRE(frontend.geometry_calls > geometry_calls);
+
+    frontend.mode = "player1";
+    frontend.option_updated = true;
+    api->run();
+    REQUIRE(frontend.video_width == 256U && frontend.video_height == 384U);
+    api->unload_game();
+
+    set_default_options();
+    frontend.link = "disabled";
+    reset_observations();
+    REQUIRE(api->load_game_special(subsystem_id, pair, 2U));
+    REQUIRE(validate_loaded_av(api, 512U, 384U));
+    REQUIRE(api->serialize_size() == 0U);
+    api->run();
+    REQUIRE(frontend.video_width == 512U && frontend.video_height == 384U);
+    api->unload_game();
+
+    REQUIRE(build_test_path(first_path, sizeof(first_path),
+                            "nds-playlist-one.nds"));
+    REQUIRE(build_test_path(second_path, sizeof(second_path),
+                            "nds-playlist-two.nds"));
+    REQUIRE(build_test_path(playlist_path, sizeof(playlist_path),
+                            "nds-pair.m3u"));
+    REQUIRE(write_test_file(first_path, first_rom, TEST_NDS_ROM_SIZE));
+    REQUIRE(write_test_file(second_path, second_rom, TEST_NDS_ROM_SIZE));
+    playlist_length = snprintf(playlist, sizeof(playlist), "%s\n%s\n",
+                               first_path, second_path);
+    REQUIRE(playlist_length > 0 &&
+            (size_t)playlist_length < sizeof(playlist));
+    REQUIRE(write_test_file(playlist_path, playlist,
+                            (size_t)playlist_length));
+    memset(&playlist_game, 0, sizeof(playlist_game));
+    playlist_game.path = playlist_path;
+    set_default_options();
+    frontend.link = "disabled";
+    reset_observations();
+    REQUIRE(api->load_game(&playlist_game));
+    REQUIRE(validate_loaded_av(api, 512U, 384U));
+    REQUIRE(api->serialize_size() == 0U);
+    api->run();
+    REQUIRE(frontend.video_width == 512U && frontend.video_height == 384U);
+    api->unload_game();
+    return true;
+}
+
 static bool test_m3u_load(struct core_api *api,
                           const uint8_t *first_rom,
                           const uint8_t *second_rom)
@@ -1406,6 +1735,8 @@ int main(int argc, char **argv)
     uint8_t *second_rom = NULL;
     uint8_t gba_rom[TEST_GBA_ROM_SIZE];
     uint8_t gba_second_rom[TEST_GBA_ROM_SIZE];
+    uint8_t nds_rom[TEST_NDS_ROM_SIZE];
+    uint8_t nds_second_rom[TEST_NDS_ROM_SIZE];
     char directory_template[] = "/tmp/dualboy-libretro-smoke-XXXXXX";
     char *directory;
     int temporary_fd;
@@ -1413,10 +1744,17 @@ int main(int argc, char **argv)
     bool initialized = false;
     bool success = false;
 
+#if defined(DUALBOY_INTERNAL_TEST)
+    if (argc != 1) {
+        fprintf(stderr, "usage: %s\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+#else
     if (argc != 2) {
         fprintf(stderr, "usage: %s CORE\n", argv[0]);
         return EXIT_FAILURE;
     }
+#endif
     temporary_fd = mkstemp(directory_template);
     if (temporary_fd < 0) {
         perror("temporary directory creation");
@@ -1439,12 +1777,16 @@ int main(int argc, char **argv)
     set_default_options();
     reset_observations();
 
+#if defined(DUALBOY_INTERNAL_TEST)
+    handle = NULL;
+#else
     handle = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
     if (handle == NULL) {
         fprintf(stderr, "unable to load %s: %s\n", argv[1], dlerror());
         cleanup_temporary_directory(directory);
         return EXIT_FAILURE;
     }
+#endif
     load_core_api(handle, &api);
     api.set_environment(environment_callback);
     api.set_video_refresh(video_callback);
@@ -1480,6 +1822,8 @@ int main(int argc, char **argv)
     }
     memcpy(gba_second_rom, gba_rom, sizeof(gba_second_rom));
     gba_second_rom[0x200U] ^= 0xA5U;
+    make_test_nds_rom(nds_rom, (uint8_t)'E');
+    make_test_nds_rom(nds_second_rom, (uint8_t)'F');
 
     api.set_controller_port_device(0U, RETRO_DEVICE_JOYPAD);
     api.set_controller_port_device(1U, RETRO_DEVICE_JOYPAD);
@@ -1490,7 +1834,8 @@ int main(int argc, char **argv)
         !test_two_rom_subsystem(&api, first_rom, second_rom, gba_rom) ||
         !test_m3u_load(&api, normal_rom, first_rom) ||
         !test_gba_two_rom_subsystem(&api, gba_rom, gba_second_rom) ||
-        !test_gba_load(&api, gba_rom)) {
+        !test_gba_load(&api, gba_rom) ||
+        !test_nds_load_paths(&api, nds_rom, nds_second_rom)) {
         goto cleanup;
     }
     success = true;
@@ -1503,10 +1848,14 @@ cleanup:
     if (initialized) {
         api.deinit();
     }
+#if !defined(DUALBOY_INTERNAL_TEST)
     if (dlclose(handle) != 0) {
         fprintf(stderr, "unable to unload core: %s\n", dlerror());
         success = false;
     }
+#else
+    (void)handle;
+#endif
     cleanup_temporary_directory(directory);
     if (!success) {
         return EXIT_FAILURE;

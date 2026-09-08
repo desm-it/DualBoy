@@ -12,8 +12,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define DUALBOY_MAX_COMPOSITE_WIDTH 480U
-#define DUALBOY_MAX_COMPOSITE_HEIGHT 320U
+#define DUALBOY_MAX_COMPOSITE_WIDTH 512U
+#define DUALBOY_MAX_COMPOSITE_HEIGHT 768U
 #define DUALBOY_MAX_COMPOSITE_PIXELS                                           \
     ((size_t)DUALBOY_MAX_COMPOSITE_WIDTH * DUALBOY_MAX_COMPOSITE_HEIGHT)
 
@@ -65,7 +65,8 @@ bool dualboy_session_set_link(struct dualboy_session *session,
                               size_t error_size);
 
 bool dualboy_session_run(struct dualboy_session *session,
-                         const uint16_t port_buttons[DUALBOY_MACHINE_COUNT],
+                         const struct dualboy_machine_input
+                             port_inputs[DUALBOY_MACHINE_COUNT],
                          const struct dualboy_compositor_config *display,
                          char *error,
                          size_t error_size);

@@ -16,6 +16,8 @@
 #include <sys/file.h>
 #include <unistd.h>
 
+#define DUALBOY_NDS_FIRMWARE_SIZE (128U * 1024U)
+
 static void set_error(char *error, size_t error_size, const char *format, ...)
 {
     va_list arguments;
@@ -71,8 +73,16 @@ static const char *region_path(const struct dualboy_save_manager *manager,
                                unsigned machine,
                                enum dualboy_memory_kind kind)
 {
-    return kind == DUALBOY_MEMORY_RTC ? manager->paths.rtc[machine]
-                                      : manager->paths.sram[machine];
+    switch (kind) {
+    case DUALBOY_MEMORY_SAVE_RAM:
+        return manager->paths.sram[machine];
+    case DUALBOY_MEMORY_RTC:
+        return manager->paths.rtc[machine];
+    case DUALBOY_MEMORY_FIRMWARE:
+        return manager->paths.firmware[machine];
+    default:
+        return NULL;
+    }
 }
 
 static bool engine_memory(struct dualboy_session *session,
@@ -133,6 +143,71 @@ static bool read_region(const char *path,
     set_error(error, error_size, "could not read save %s: %s", path,
               dualboy_persistence_result_message(result));
     return false;
+}
+
+static bool load_nds_firmware(const char *path,
+                              const struct dualboy_session *session,
+                              unsigned machine,
+                              void *destination,
+                              size_t capacity,
+                              size_t *loaded_size,
+                              char *error,
+                              size_t error_size)
+{
+    uint8_t *temporary;
+    size_t file_size = 0U;
+    enum dualboy_persistence_result result;
+
+    if (loaded_size != NULL) {
+        *loaded_size = 0U;
+    }
+    temporary = (uint8_t *)malloc(capacity);
+    if (temporary == NULL) {
+        set_error(error, error_size, "out of memory while reading %s", path);
+        return false;
+    }
+    result = dualboy_read_file_filled(path, temporary, capacity, 0U,
+                                      &file_size);
+    if (result == DUALBOY_PERSISTENCE_NOT_FOUND) {
+        free(temporary);
+        return true;
+    }
+    if (result == DUALBOY_PERSISTENCE_TOO_LARGE) {
+        free(temporary);
+        set_error(error, error_size,
+                  "NDS firmware must be exactly 128 KiB (131072 bytes); "
+                  "file is larger: %s",
+                  path);
+        return false;
+    }
+    if (result != DUALBOY_PERSISTENCE_OK) {
+        free(temporary);
+        set_error(error, error_size, "could not read NDS firmware %s: %s",
+                  path, dualboy_persistence_result_message(result));
+        return false;
+    }
+    if (file_size != DUALBOY_NDS_FIRMWARE_SIZE) {
+        free(temporary);
+        set_error(error, error_size,
+                  "NDS firmware must be exactly 128 KiB (131072 bytes); "
+                  "found %zu bytes at %s",
+                  file_size, path);
+        return false;
+    }
+    if (session->engine->validate_persistent_memory != NULL &&
+        !session->engine->validate_persistent_memory(
+            session->pair, machine, DUALBOY_MEMORY_FIRMWARE, temporary,
+            file_size, error, error_size)) {
+        free(temporary);
+        return false;
+    }
+
+    memcpy(destination, temporary, capacity);
+    if (loaded_size != NULL) {
+        *loaded_size = file_size;
+    }
+    free(temporary);
+    return true;
 }
 
 static bool is_supported_gba_battery_size(size_t size)
@@ -351,8 +426,13 @@ static void choose_ownership(struct dualboy_save_manager *manager,
     unsigned kind;
 
     for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
-        for (kind = 0U; kind < 2U; ++kind) {
-            manager->core_managed[machine][kind] = true;
+        for (kind = 0U; kind < DUALBOY_MEMORY_KIND_COUNT; ++kind) {
+            manager->core_managed[machine][kind] =
+                kind == DUALBOY_MEMORY_SAVE_RAM ||
+                (kind == DUALBOY_MEMORY_RTC &&
+                 session->engine->family != DUALBOY_ENGINE_MELONDS) ||
+                (kind == DUALBOY_MEMORY_FIRMWARE &&
+                 session->engine->family == DUALBOY_ENGINE_MELONDS);
         }
     }
     if (session->engine->family != DUALBOY_ENGINE_SAMEBOY ||
@@ -360,14 +440,14 @@ static void choose_ownership(struct dualboy_save_manager *manager,
         return;
     }
     if (!session->content_path_missing[0]) {
-        for (kind = 0U; kind < 2U; ++kind) {
+        for (kind = 0U; kind < DUALBOY_MEMORY_KIND_COUNT; ++kind) {
             manager->core_managed[0][kind] = false;
         }
     }
     if (session->load_kind == DUALBOY_LOAD_SUBSYSTEM &&
         !manager->paths.second_uses_collision_suffix &&
         !session->content_path_missing[1]) {
-        for (kind = 0U; kind < 2U; ++kind) {
+        for (kind = 0U; kind < DUALBOY_MEMORY_KIND_COUNT; ++kind) {
             manager->core_managed[1][kind] = false;
         }
     }
@@ -386,7 +466,7 @@ static bool has_core_managed_regions(
     unsigned kind;
 
     for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
-        for (kind = 0U; kind < 2U; ++kind) {
+        for (kind = 0U; kind < DUALBOY_MEMORY_KIND_COUNT; ++kind) {
             if (manager->core_managed[machine][kind]) {
                 return true;
             }
@@ -434,7 +514,7 @@ static enum write_ownership_result acquire_write_ownership(
     }
 
     for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
-        for (kind = 0U; kind < 2U; ++kind) {
+        for (kind = 0U; kind < DUALBOY_MEMORY_KIND_COUNT; ++kind) {
             const char *path;
             size_t previous;
             bool duplicate = false;
@@ -517,7 +597,7 @@ static void release_tracking_baselines(struct dualboy_save_manager *manager)
     unsigned kind;
 
     for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
-        for (kind = 0U; kind < 2U; ++kind) {
+        for (kind = 0U; kind < DUALBOY_MEMORY_KIND_COUNT; ++kind) {
             free(manager->tracked[machine][kind].baseline);
             manager->tracked[machine][kind].baseline = NULL;
             manager->tracked[machine][kind].baseline_size = 0U;
@@ -547,6 +627,8 @@ bool dualboy_save_manager_init(struct dualboy_save_manager *manager,
     result = dualboy_build_save_paths(save_directory,
                                       session->roms[0].rom.path,
                                       session->roms[1].rom.path,
+                                      session->engine->family ==
+                                          DUALBOY_ENGINE_MELONDS,
                                       &manager->paths);
     if (result != DUALBOY_PERSISTENCE_OK) {
         set_error(error, error_size, "could not derive save paths: %s",
@@ -564,7 +646,7 @@ bool dualboy_save_manager_init(struct dualboy_save_manager *manager,
     }
 
     for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
-        for (kind = 0U; kind < 2U; ++kind) {
+        for (kind = 0U; kind < DUALBOY_MEMORY_KIND_COUNT; ++kind) {
             struct dualboy_save_region_tracking *tracking =
                 &manager->tracked[machine][kind];
             void *data = NULL;
@@ -583,17 +665,32 @@ bool dualboy_save_manager_init(struct dualboy_save_manager *manager,
                           machine + 1U, kind);
                 goto failure;
             }
+            if (kind == DUALBOY_MEMORY_FIRMWARE &&
+                size != DUALBOY_NDS_FIRMWARE_SIZE) {
+                set_error(error, error_size,
+                          "engine exposed %zu bytes of NDS firmware for "
+                          "machine %u; expected exactly 128 KiB "
+                          "(131072 bytes)",
+                          size, machine + 1U);
+                goto failure;
+            }
             if (size > 0U) {
-                const bool loaded = kind == DUALBOY_MEMORY_SAVE_RAM
-                                        ? load_sram(manager, session, machine, data,
-                                                    size, &loaded_size, error,
-                                                    error_size)
-                                        : read_region(region_path(
-                                                          manager, machine,
-                                                          DUALBOY_MEMORY_RTC),
-                                                      data, size, 0U, true,
-                                                      &loaded_size, error,
-                                                      error_size);
+                const enum dualboy_memory_kind memory_kind =
+                    (enum dualboy_memory_kind)kind;
+                bool loaded;
+
+                if (kind == DUALBOY_MEMORY_SAVE_RAM) {
+                    loaded = load_sram(manager, session, machine, data, size,
+                                       &loaded_size, error, error_size);
+                } else if (kind == DUALBOY_MEMORY_FIRMWARE) {
+                    loaded = load_nds_firmware(
+                        region_path(manager, machine, memory_kind), session,
+                        machine, data, size, &loaded_size, error, error_size);
+                } else {
+                    loaded = read_region(
+                        region_path(manager, machine, memory_kind), data, size,
+                        0U, true, &loaded_size, error, error_size);
+                }
                 if (!loaded) {
                     goto failure;
                 }
@@ -619,6 +716,9 @@ bool dualboy_save_manager_init(struct dualboy_save_manager *manager,
             }
         }
     }
+    if (session->engine->persistent_memory_loaded != NULL) {
+        session->engine->persistent_memory_loaded(session->pair);
+    }
     manager->initialized = true;
     return true;
 
@@ -638,7 +738,9 @@ bool dualboy_save_manager_frontend_memory(
     size_t *size)
 {
     if (manager == NULL || !manager->initialized ||
-        machine >= DUALBOY_MACHINE_COUNT || (unsigned)kind >= 2U ||
+        machine >= DUALBOY_MACHINE_COUNT ||
+        (unsigned)kind >= DUALBOY_MEMORY_KIND_COUNT ||
+        kind == DUALBOY_MEMORY_FIRMWARE ||
         manager->core_managed[machine][kind]) {
         if (data != NULL) {
             *data = NULL;
@@ -668,7 +770,7 @@ bool dualboy_save_manager_flush(struct dualboy_save_manager *manager,
         return true;
     }
     for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
-        for (kind = 0U; kind < 2U; ++kind) {
+        for (kind = 0U; kind < DUALBOY_MEMORY_KIND_COUNT; ++kind) {
             struct dualboy_save_region_tracking *tracking =
                 &manager->tracked[machine][kind];
             enum dualboy_memory_kind memory_kind =

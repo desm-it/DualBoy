@@ -24,7 +24,7 @@ static struct retro_core_option_v2_category option_categories[] = {
     {
         "link",
         "Link and Players",
-        "Configure the link cable and player-to-machine mapping.",
+        "Configure local multiplayer transport and player-to-machine mapping.",
     },
     {
         "audio",
@@ -66,9 +66,9 @@ static struct retro_core_option_v2_definition option_v2_definitions[] = {
     },
     {
         DUALBOY_OPTION_LINK,
-        "Link Cable",
-        "Link Cable",
-        "Connect or disconnect the emulated link cable between both machines.",
+        "Local Link",
+        "Local Link",
+        "Connect or disconnect the emulated cable or local wireless transport between both machines.",
         NULL,
         "link",
         {
@@ -140,8 +140,8 @@ static struct retro_core_option_definition option_v1_definitions[] = {
     },
     {
         DUALBOY_OPTION_LINK,
-        "Link Cable",
-        "Connect or disconnect the emulated link cable between both machines.",
+        "Local Link",
+        "Connect or disconnect the emulated cable or local wireless transport between both machines.",
         {
             {"enabled", "Enabled"},
             {"disabled", "Disabled"},
@@ -178,7 +178,7 @@ static struct retro_variable option_legacy_definitions[] = {
     {DUALBOY_OPTION_MODE, "Display Mode; dual|player1|player2"},
     {DUALBOY_OPTION_LAYOUT,
      "Dual-screen Layout; side_by_side|top_bottom"},
-    {DUALBOY_OPTION_LINK, "Link Cable; enabled|disabled"},
+    {DUALBOY_OPTION_LINK, "Local Link; enabled|disabled"},
     {DUALBOY_OPTION_SWAP, "Swap Players/Screens; disabled|enabled"},
     {DUALBOY_OPTION_AUDIO, "Audio Source; player1|disabled"},
     {NULL, NULL},

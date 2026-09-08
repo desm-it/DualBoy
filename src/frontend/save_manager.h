@@ -13,7 +13,8 @@
 #include <stdint.h>
 
 #define DUALBOY_SAVE_FLUSH_INTERVAL_FRAMES 300U
-#define DUALBOY_MAX_SAVE_LOCKS (DUALBOY_MACHINE_COUNT * 2U)
+#define DUALBOY_MAX_SAVE_LOCKS \
+    (DUALBOY_MACHINE_COUNT * DUALBOY_MEMORY_KIND_COUNT)
 
 struct dualboy_save_region_tracking {
     uint8_t *baseline;
@@ -28,8 +29,9 @@ struct dualboy_save_region_tracking {
 
 struct dualboy_save_manager {
     struct dualboy_save_paths paths;
-    bool core_managed[DUALBOY_MACHINE_COUNT][2];
-    struct dualboy_save_region_tracking tracked[DUALBOY_MACHINE_COUNT][2];
+    bool core_managed[DUALBOY_MACHINE_COUNT][DUALBOY_MEMORY_KIND_COUNT];
+    struct dualboy_save_region_tracking
+        tracked[DUALBOY_MACHINE_COUNT][DUALBOY_MEMORY_KIND_COUNT];
     uint64_t frames_since_flush;
     int write_lock_fds[DUALBOY_MAX_SAVE_LOCKS];
     size_t write_lock_count;
@@ -41,7 +43,8 @@ struct dualboy_save_manager {
  * Selects safe persistence ownership and loads every core-managed region.
  * SameBoy uses frontend-managed memory where each content slot has a unique
  * identity. mGBA and M3U use core-managed files because their save storage is
- * not a stable one-file Libretro memory region.
+ * not a stable one-file Libretro memory region. melonDS uses core-managed
+ * cartridge SaveRAM and writable firmware; firmware is never frontend-managed.
  */
 bool dualboy_save_manager_init(struct dualboy_save_manager *manager,
                                struct dualboy_session *session,

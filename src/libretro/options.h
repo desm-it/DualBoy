@@ -25,7 +25,7 @@ struct dualboy_options {
 
 void dualboy_options_set_defaults(struct dualboy_options *options);
 
-/* Register the five MVP options using the newest API advertised by the frontend. */
+/* Register DualBoy options using the newest API advertised by the frontend. */
 void dualboy_options_register(retro_environment_t environment);
 
 /*

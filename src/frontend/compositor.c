@@ -67,6 +67,62 @@ bool dualboy_compositor_geometry(const struct dualboy_video_frame frames[2],
     return true;
 }
 
+bool dualboy_compositor_map_point(
+    const struct dualboy_video_frame frames[2],
+    const struct dualboy_compositor_config *config,
+    unsigned composite_x,
+    unsigned composite_y,
+    unsigned *port,
+    unsigned *machine_x,
+    unsigned *machine_y)
+{
+    struct dualboy_geometry geometry;
+    unsigned logical_port;
+    unsigned machine;
+    unsigned local_x = composite_x;
+    unsigned local_y = composite_y;
+
+    if (port == NULL || machine_x == NULL || machine_y == NULL ||
+        !dualboy_compositor_geometry(frames, config, &geometry) ||
+        composite_x >= geometry.width || composite_y >= geometry.height) {
+        return false;
+    }
+
+    if (config->mode == DUALBOY_MODE_PLAYER1) {
+        logical_port = 0U;
+    } else if (config->mode == DUALBOY_MODE_PLAYER2) {
+        logical_port = 1U;
+    } else if (config->layout == DUALBOY_LAYOUT_TOP_BOTTOM) {
+        logical_port = composite_y >= frames[dualboy_machine_for_port(
+                                              0U, config->swap_players)].height
+                           ? 1U
+                           : 0U;
+        if (logical_port == 1U) {
+            local_y -= frames[dualboy_machine_for_port(
+                                  0U, config->swap_players)].height;
+        }
+    } else {
+        logical_port = composite_x >= frames[dualboy_machine_for_port(
+                                              0U, config->swap_players)].width
+                           ? 1U
+                           : 0U;
+        if (logical_port == 1U) {
+            local_x -= frames[dualboy_machine_for_port(
+                                  0U, config->swap_players)].width;
+        }
+    }
+
+    machine = dualboy_machine_for_port(logical_port, config->swap_players);
+    if (machine >= DUALBOY_MACHINE_COUNT || local_x >= frames[machine].width ||
+        local_y >= frames[machine].height) {
+        return false;
+    }
+    *port = logical_port;
+    *machine_x = local_x;
+    *machine_y = local_y;
+    return true;
+}
+
 static void copy_row(uint32_t *destination,
                      const struct dualboy_video_frame *source,
                      unsigned row)

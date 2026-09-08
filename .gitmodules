@@ -7,3 +7,6 @@
 [submodule "third_party/libretro-common"]
 	path = third_party/libretro-common
 	url = https://github.com/libretro/libretro-common.git
+[submodule "third_party/melonDS"]
+	path = third_party/melonDS
+	url = https://github.com/melonDS-emu/melonDS.git

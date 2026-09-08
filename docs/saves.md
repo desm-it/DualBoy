@@ -8,10 +8,10 @@ DualBoy has two different persistence paths:
   exposed by `retro_get_memory_data`, preventing RetroArch and DualBoy from
   treating the same bytes as two live authorities.
 
-SaveRAM and RTC are independent for both machines even when one ROM image is
-duplicated. All battery paths use RetroArch's configured Save Files directory. If
-the frontend supplies no save directory, DualBoy falls back to its System/BIOS
-directory and logs a warning.
+SaveRAM, RTC, and NDS writable firmware are independent for both machines even
+when one ROM image is duplicated. All persistent paths use RetroArch's configured
+Save Files directory. If the frontend supplies no save directory, DualBoy falls
+back to its System/BIOS directory and logs a warning.
 
 ## Canonical names
 
@@ -23,6 +23,10 @@ adds a persistence suffix. Directory names are not included in the stem. Example
 | `/games/red.gb` | `<save dir>/red.srm` | `<save dir>/red.rtc` |
 | `/games/title.gba` | `<save dir>/title.srm` | `<save dir>/title.rtc` |
 
+An NDS cartridge uses `<stem>.srm` for cartridge SaveRAM and
+`<stem>.firmware.bin` for its writable generated firmware. NDS has no separate
+DualBoy RTC file.
+
 GBA's canonical DualBoy and RetroArch extension is **`.srm`**, not `.sav`.
 
 When the complete machine-0 and machine-1 `.srm` paths would be identical,
@@ -32,6 +36,10 @@ machine 1 receives a collision suffix:
 | --- | --- | --- |
 | 0 / Player 1 | `game.srm` | `game.rtc` |
 | 1 / Player 2 | `game.srm.2` | `game.rtc.2` |
+
+The same collision decision gives NDS machine 0 `game.firmware.bin` and machine
+1 `game.firmware.bin.2`. Different cartridge stems each retain the unsuffixed
+`.firmware.bin` name.
 
 This rule covers a normal same-ROM load and two cartridges from different
 directories that have the same basename. It prevents the two mutable machines
@@ -44,13 +52,15 @@ bytes with 64-bit FNV-1a and creates a stable synthetic identity:
 dualboy-0123456789abcdef.gb
 dualboy-0123456789abcdef.gbc
 dualboy-0123456789abcdef.gba
+dualboy-0123456789abcdef.nds
 ```
 
 The real hexadecimal value depends on the complete content bytes. A duplicated
 pathless cartridge therefore uses the corresponding
 `dualboy-<hash>.srm`/`.rtc` and
 `dualboy-<hash>.srm.2`/`.rtc.2` files. Pathless regions are always
-core-managed.
+core-managed. Pathless NDS instead adds the corresponding
+`.firmware.bin`/`.firmware.bin.2` pair and has no `.rtc` files.
 
 ## Ownership by load mode
 
@@ -99,7 +109,40 @@ loads. Standard and custom Libretro memory IDs return no mGBA battery region, so
 RetroArch cannot simultaneously write the same bytes. Paths follow the canonical
 and collision rules above.
 
+### melonDS
+
+Both machines' cartridge SaveRAM and firmware are core-managed in normal,
+subsystem, and M3U loads. NDS battery memory is not exposed through standard or
+custom Libretro memory IDs, so RetroArch cannot become a second writer. A normal
+same-ROM load uses `<stem>.srm`/`<stem>.srm.2` and
+`<stem>.firmware.bin`/`<stem>.firmware.bin.2`; different-ROM loads derive each
+identity from its own cartridge path.
+
+DualBoy starts each console with melonDS's built-in free BIOS and an independent
+generated firmware copy. It does not read or ship Nintendo BIOS or firmware
+dumps. Existing core-managed firmware is then loaded into that console's buffer,
+and melonDS write callbacks mark it for the ordinary atomic flush path. The
+generated identities use distinct locally administered MAC addresses ending in
+`00` and `01`.
+
 ## Exact persistent extents
+
+### NDS SaveRAM and firmware
+
+The cartridge SaveRAM extent is the exact stable length returned by melonDS for
+the parsed cartridge. DualBoy does not substitute a fixed maximum or guess a
+disk length after load. Missing and short files are filled with `0xff` up to that
+capacity; a file larger than the reported capacity is rejected.
+
+At the pinned melonDS revision, `Firmware(0)` produces the 128 KiB DS firmware
+used by both instances. Each instance owns and persists its own complete 128 KiB
+copy. An existing firmware file must be exactly 128 KiB; empty, truncated, and
+oversized files reject the load without replacing the newly generated firmware
+in memory. Exact-size files are also validated as DualBoy-generated DS Lite
+images, including the header identity, user-settings offset, and every dynamic
+range melonDS traverses during reset; malformed content is rejected before it
+enters live engine memory. Firmware is not exposed to the frontend as SaveRAM or
+RTC, and there is no NDS `.rtc` region.
 
 ### GBA SaveRAM
 
@@ -181,8 +224,9 @@ rather than guessed.
 
 ## Writes, flushing, and locks
 
-Core-managed files are checked every 300 frontend frames, roughly five seconds at
-DualBoy's 59.7275 Hz rate, and are force-checked before normal unload/deinit. A
+Core-managed files are checked every 300 frontend frames, roughly five seconds
+at the active platform's frame rate, and are force-checked before normal
+unload/deinit. A
 hash suppresses writes when the tracked bytes did not change. For unresolved
 mGBA extents, a full-capacity baseline is retained so the first guest write is
 recognized when detection becomes known.
@@ -217,11 +261,16 @@ set.
 ## Save states are separate
 
 RetroArch manages save-state files in its configured Save States directory.
-DualBoy's state blob contains both machine states and the link scheduler under one
-versioned, checksummed header. State loading validates the complete container and
-rolls both machines back together on failure.
+For GB/GBC/GBA, DualBoy's state blob contains both machine states and the link
+scheduler under one versioned, checksummed header. State loading validates the
+complete container and rolls both machines back together on failure.
 
 Battery SaveRAM and RTC are deliberately copied around state loading. Loading an
 old save state therefore does **not** rewind either battery file, mark battery
 memory dirty merely because it appeared in a state, or replace a canonical save.
 Back up and synchronize battery files and save states as distinct data classes.
+
+NDS state callbacks are intentionally absent because melonDS machine state does
+not include the pair-owned `LocalMP` queues and waits. NDS manual states, rewind,
+and runahead are unsupported; `retro_serialize_size()` returns zero during an NDS
+session. Cartridge SaveRAM and firmware persistence continue independently.

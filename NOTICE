@@ -1,0 +1,84 @@
+DualBoy distribution notices
+============================
+
+DualBoy-authored source files are offered under MPL-2.0. The complete MPL-2.0
+text is in LICENSE. The statically linked dualboy_libretro binary includes
+melonDS, which is GPL-3.0-or-later. The combined binary and a distribution that
+contains it are therefore conveyed under GPLv3-compatible terms. The complete
+GPLv3 text is in third_party/melonDS/LICENSE and is installed as
+licenses/melonDS-GPL-3.0.txt by CMake.
+
+Component inventory
+-------------------
+
+* melonDS, copyright the melonDS authors and contributors:
+  GPL-3.0-or-later. Source: https://github.com/melonDS-emu/melonDS
+* SameBoy, copyright (c) 2015-2026 Lior Halphon:
+  Expat. Source: https://github.com/LIJI32/SameBoy
+* mGBA and the libretro/mgba PR #318 snapshot:
+  MPL-2.0. Source: https://github.com/libretro/mgba
+* Libretro API header, copyright (C) 2010-2024 The RetroArch team:
+  MIT. Source: https://github.com/libretro/libretro-common
+
+The selected melonDS static core contains these bundled components:
+
+* Teakra, copyright (c) 2018 Weiyi Wang: MIT.
+* FatFs, copyright (C) ChaN: the BSD-like FatFs license.
+* FreeBIOS, copyright (c) 2013 Gilead Kutnick: BSD-2-Clause-style terms.
+* blip-buf, copyright (C) 2003-2009 Shay Green: LGPL-2.1-or-later.
+* xxHash, copyright (C) 2012-2023 Yann Collet: BSD-2-Clause.
+* SHA-1 in C by Steve Reid: stated by its source to be 100% public domain.
+* tiny-AES-c: stated by its upstream README to be public domain and accompanied
+  by the Unlicense.
+
+CMake installs the available full license texts beneath
+share/doc/dualboy/licenses. Exact source revisions and build selections are in
+THIRD_PARTY.md. The notices within every source file and submodule remain
+authoritative.
+
+Libretro API header MIT notice
+------------------------------
+
+Copyright (C) 2010-2024 The RetroArch team
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+xxHash BSD-2-Clause notice
+--------------------------
+
+Copyright (C) 2012-2023 Yann Collet
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

@@ -32,9 +32,12 @@
 #define DUALBOY_AUDIO_BUFFER_FRAMES 4096U
 #define DUALBOY_AUDIO_DRAIN_LIMIT 16U
 #define DUALBOY_ERROR_CAPACITY 512U
-#define DUALBOY_ROM_FILE_LIMIT (64U * 1024U * 1024U)
+#define DUALBOY_ROM_FILE_LIMIT (512U * 1024U * 1024U)
 #define DUALBOY_FRAME_RATE 59.7275
 #define DUALBOY_DEFAULT_SAMPLE_RATE 48000U
+#define DUALBOY_NDS_SCREEN_WIDTH 256U
+#define DUALBOY_NDS_SCREEN_HEIGHT 192U
+#define DUALBOY_POINTER_CONTACT_LIMIT 16U
 
 struct dualboy_libretro_context {
     retro_environment_t environment;
@@ -59,10 +62,23 @@ struct dualboy_libretro_context {
     bool link_failure_logged;
     bool input_bitmasks;
     bool geometry_valid;
+    bool fastforward_override_known;
+    bool fastforward_inhibited;
+    bool fastforward_warning_logged;
     bool initialized;
 };
 
 static struct dualboy_libretro_context core;
+
+#if defined(DUALBOY_INTERNAL_TEST)
+/* Test-only access to the real adapter pair. This source is compiled into a
+ * separate executable for end-to-end input assertions and is absent from the
+ * production shared object's ABI. */
+void *dualboy_libretro_debug_engine_pair(void)
+{
+    return core.session.pair;
+}
+#endif
 
 static struct retro_subsystem_memory_info slot1_memory[] = {
     {"srm", DUALBOY_SLOT1_SRAM_ID},
@@ -77,7 +93,7 @@ static struct retro_subsystem_memory_info slot2_memory[] = {
 static struct retro_subsystem_rom_info subsystem_roms[] = {
     {
         "Player 1 cartridge",
-        "gb|gbc|gba",
+        "gb|gbc|gba|nds",
         false,
         false,
         true,
@@ -86,7 +102,7 @@ static struct retro_subsystem_rom_info subsystem_roms[] = {
     },
     {
         "Player 2 cartridge",
-        "gb|gbc|gba",
+        "gb|gbc|gba|nds",
         false,
         false,
         true,
@@ -113,16 +129,20 @@ static struct retro_system_content_info_override content_overrides[] = {
 
 static struct retro_controller_description retropad_types[] = {
     {"RetroPad", RETRO_DEVICE_JOYPAD},
+    {"RetroPad with Analog", RETRO_DEVICE_ANALOG},
 };
 
 static struct retro_controller_info controller_info[] = {
-    {retropad_types, 1U},
-    {retropad_types, 1U},
+    {retropad_types, 2U},
+    {retropad_types, 2U},
     {NULL, 0U},
 };
 
 #define INPUT_DESC(port_, id_, text_)                                          \
     {(port_), RETRO_DEVICE_JOYPAD, 0U, (id_), (text_)}
+#define ANALOG_DESC(port_, id_, text_)                                         \
+    {(port_), RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT, (id_),     \
+     (text_)}
 
 static struct retro_input_descriptor input_descriptors[] = {
     INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_UP, "Player 1 Up"),
@@ -131,24 +151,35 @@ static struct retro_input_descriptor input_descriptors[] = {
     INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_RIGHT, "Player 1 Right"),
     INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_A, "Player 1 A"),
     INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_B, "Player 1 B"),
+    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_X, "Player 1 X"),
+    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_Y, "Player 1 Y"),
     INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_L, "Player 1 L"),
     INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_R, "Player 1 R"),
     INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_SELECT, "Player 1 Select"),
     INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_START, "Player 1 Start"),
+    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_R3, "Player 1 Touch Press"),
+    ANALOG_DESC(0U, RETRO_DEVICE_ID_ANALOG_X, "Player 1 Touch X"),
+    ANALOG_DESC(0U, RETRO_DEVICE_ID_ANALOG_Y, "Player 1 Touch Y"),
     INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_UP, "Player 2 Up"),
     INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_DOWN, "Player 2 Down"),
     INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_LEFT, "Player 2 Left"),
     INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_RIGHT, "Player 2 Right"),
     INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_A, "Player 2 A"),
     INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_B, "Player 2 B"),
+    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_X, "Player 2 X"),
+    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_Y, "Player 2 Y"),
     INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_L, "Player 2 L"),
     INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_R, "Player 2 R"),
     INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_SELECT, "Player 2 Select"),
     INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_START, "Player 2 Start"),
+    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_R3, "Player 2 Touch Press"),
+    ANALOG_DESC(1U, RETRO_DEVICE_ID_ANALOG_X, "Player 2 Touch X"),
+    ANALOG_DESC(1U, RETRO_DEVICE_ID_ANALOG_Y, "Player 2 Touch Y"),
     {0U, 0U, 0U, 0U, NULL},
 };
 
 #undef INPUT_DESC
+#undef ANALOG_DESC
 
 static enum retro_log_level frontend_log_level(enum dualboy_log_level level)
 {
@@ -318,10 +349,56 @@ static void ensure_initialized(void)
     core.initialized = true;
 }
 
+static bool transport_requires_realtime(void)
+{
+    return core.session.loaded && core.session.engine != NULL &&
+           core.session.engine->link_transport_active != NULL &&
+           core.session.engine->link_transport_active(core.session.pair);
+}
+
+static void set_fastforward_inhibition(bool inhibit)
+{
+    struct retro_fastforwarding_override override = {
+        inhibit ? 1.0F : 0.0F,
+        false,
+        false,
+        inhibit,
+    };
+
+    if (!core.fastforward_override_known && !inhibit) {
+        return;
+    }
+    if (core.fastforward_override_known &&
+        core.fastforward_inhibited == inhibit) {
+        return;
+    }
+    core.fastforward_override_known = true;
+    core.fastforward_inhibited = inhibit;
+    if (core.environment != NULL &&
+        !core.environment(RETRO_ENVIRONMENT_SET_FASTFORWARDING_OVERRIDE,
+                          &override) &&
+        inhibit && !core.fastforward_warning_logged) {
+        core_log(RETRO_LOG_WARN,
+                 "frontend cannot inhibit fast-forward during active local wireless");
+        core.fastforward_warning_logged = true;
+    }
+}
+
+static void synchronize_fastforward_policy(void)
+{
+    const bool inhibit = transport_requires_realtime();
+
+    if (inhibit || (core.fastforward_override_known &&
+                    core.fastforward_inhibited)) {
+        set_fastforward_inhibition(inhibit);
+    }
+}
+
 static void unload_current(void)
 {
     char error[DUALBOY_ERROR_CAPACITY] = {0};
 
+    set_fastforward_inhibition(false);
     if (core.saves.initialized && core.session.loaded &&
         !dualboy_save_manager_flush(&core.saves, &core.session, true, error,
                                     sizeof(error))) {
@@ -337,6 +414,7 @@ static void unload_current(void)
  * Release ownership without asking the adapter to mirror or persist it. */
 static void discard_current(void)
 {
+    set_fastforward_inhibition(false);
     dualboy_save_manager_deinit(&core.saves);
     dualboy_session_unload(&core.session);
     core.geometry_valid = false;
@@ -377,9 +455,13 @@ static bool fallback_content_path(char *output,
     if (output == NULL || capacity == 0U || rom == NULL || rom->data == NULL) {
         return false;
     }
-    extension = rom->platform == DUALBOY_PLATFORM_GBA
-                    ? "gba"
-                    : (rom->platform == DUALBOY_PLATFORM_GBC ? "gbc" : "gb");
+    if (rom->platform == DUALBOY_PLATFORM_NDS) {
+        extension = "nds";
+    } else if (rom->platform == DUALBOY_PLATFORM_GBA) {
+        extension = "gba";
+    } else {
+        extension = rom->platform == DUALBOY_PLATFORM_GBC ? "gbc" : "gb";
+    }
     written = snprintf(output, capacity, "dualboy-%016llx.%s",
                        (unsigned long long)content_identity(rom->data,
                                                            rom->size),
@@ -395,6 +477,9 @@ static const struct dualboy_engine_ops *engine_for_family(
     }
     if (family == DUALBOY_ENGINE_MGBA) {
         return dualboy_mgba_engine();
+    }
+    if (family == DUALBOY_ENGINE_MELONDS) {
+        return dualboy_melonds_engine();
     }
     return NULL;
 }
@@ -679,26 +764,127 @@ cleanup:
     return success;
 }
 
-static uint16_t read_port_buttons(unsigned port)
+static bool port_has_controller(unsigned port)
+{
+    const unsigned device = port < DUALBOY_MACHINE_COUNT
+                                ? core.port_devices[port] & RETRO_DEVICE_MASK
+                                : RETRO_DEVICE_NONE;
+
+    return device == RETRO_DEVICE_JOYPAD || device == RETRO_DEVICE_ANALOG;
+}
+
+static uint16_t read_port_button_mask(unsigned port)
 {
     uint16_t buttons = 0U;
     unsigned id;
 
-    if (port >= DUALBOY_MACHINE_COUNT || core.input_state == NULL ||
-        (core.port_devices[port] & RETRO_DEVICE_MASK) != RETRO_DEVICE_JOYPAD) {
+    if (core.input_state == NULL || !port_has_controller(port)) {
         return 0U;
     }
     if (core.input_bitmasks) {
         return (uint16_t)core.input_state(port, RETRO_DEVICE_JOYPAD, 0U,
-                                          RETRO_DEVICE_ID_JOYPAD_MASK) &
-               UINT16_C(0x0fff);
+                                          RETRO_DEVICE_ID_JOYPAD_MASK);
     }
-    for (id = 0U; id <= RETRO_DEVICE_ID_JOYPAD_R; ++id) {
+    for (id = 0U; id <= RETRO_DEVICE_ID_JOYPAD_R3; ++id) {
         if (core.input_state(port, RETRO_DEVICE_JOYPAD, 0U, id) != 0) {
             buttons = (uint16_t)(buttons | (uint16_t)(1U << id));
         }
     }
     return buttons;
+}
+
+static unsigned normalized_coordinate(int16_t coordinate, unsigned extent)
+{
+    const uint32_t scaled =
+        (uint32_t)((int32_t)coordinate + INT32_C(0x8000));
+
+    if (extent <= 1U) {
+        return 0U;
+    }
+    return (unsigned)(((uint64_t)scaled * extent) / UINT32_C(0x10000));
+}
+
+static bool nds_session_loaded(void)
+{
+    return core.session.loaded &&
+           core.session.roms[0].rom.platform == DUALBOY_PLATFORM_NDS;
+}
+
+static struct dualboy_machine_input read_port_input(unsigned port)
+{
+    struct dualboy_machine_input input = {0U, false, 0U, 0U};
+    const uint16_t button_mask = read_port_button_mask(port);
+
+    input.buttons = button_mask & UINT16_C(0x0fff);
+    if (nds_session_loaded() && core.input_state != NULL &&
+        (button_mask & (UINT16_C(1) << RETRO_DEVICE_ID_JOYPAD_R3)) != 0U) {
+        const int16_t analog_x = core.input_state(
+            port, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT,
+            RETRO_DEVICE_ID_ANALOG_X);
+        const int16_t analog_y = core.input_state(
+            port, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT,
+            RETRO_DEVICE_ID_ANALOG_Y);
+
+        input.touch_active = true;
+        input.touch_x = (uint16_t)normalized_coordinate(
+            analog_x, DUALBOY_NDS_SCREEN_WIDTH);
+        input.touch_y = (uint16_t)normalized_coordinate(
+            analog_y, DUALBOY_NDS_SCREEN_HEIGHT);
+    }
+    return input;
+}
+
+static void apply_pointer_contacts(
+    struct dualboy_machine_input inputs[DUALBOY_MACHINE_COUNT],
+    const struct dualboy_compositor_config *display)
+{
+    struct dualboy_video_frame frames[DUALBOY_MACHINE_COUNT];
+    struct dualboy_geometry geometry;
+    bool assigned[DUALBOY_MACHINE_COUNT] = {false, false};
+    unsigned index;
+
+    if (!nds_session_loaded() || core.input_state == NULL || display == NULL ||
+        core.session.engine == NULL || core.session.engine->video_frame == NULL ||
+        !core.session.engine->video_frame(core.session.pair, 0U, &frames[0]) ||
+        !core.session.engine->video_frame(core.session.pair, 1U, &frames[1]) ||
+        !dualboy_compositor_geometry(frames, display, &geometry)) {
+        return;
+    }
+
+    for (index = 0U; index < DUALBOY_POINTER_CONTACT_LIMIT; ++index) {
+        int16_t pointer_x;
+        int16_t pointer_y;
+        unsigned composite_x;
+        unsigned composite_y;
+        unsigned port;
+        unsigned machine_x;
+        unsigned machine_y;
+
+        if (core.input_state(0U, RETRO_DEVICE_POINTER, index,
+                             RETRO_DEVICE_ID_POINTER_PRESSED) == 0) {
+            break;
+        }
+        pointer_x = core.input_state(0U, RETRO_DEVICE_POINTER, index,
+                                     RETRO_DEVICE_ID_POINTER_X);
+        pointer_y = core.input_state(0U, RETRO_DEVICE_POINTER, index,
+                                     RETRO_DEVICE_ID_POINTER_Y);
+        composite_x = normalized_coordinate(pointer_x, geometry.width);
+        composite_y = normalized_coordinate(pointer_y, geometry.height);
+        if (!dualboy_compositor_map_point(frames, display, composite_x,
+                                          composite_y, &port, &machine_x,
+                                          &machine_y) ||
+            port >= DUALBOY_MACHINE_COUNT || assigned[port] ||
+            machine_x >= DUALBOY_NDS_SCREEN_WIDTH ||
+            machine_y < DUALBOY_NDS_SCREEN_HEIGHT ||
+            machine_y >= DUALBOY_NDS_SCREEN_HEIGHT * 2U) {
+            continue;
+        }
+        inputs[port].touch_active = true;
+        inputs[port].touch_x = (uint16_t)machine_x;
+        inputs[port].touch_y =
+            (uint16_t)(machine_y - DUALBOY_NDS_SCREEN_HEIGHT);
+        assigned[port] = true;
+    }
 }
 
 static void update_options(void)
@@ -787,10 +973,14 @@ static struct dualboy_geometry fallback_geometry(void)
     unsigned native_width = 160U;
     unsigned native_height = 144U;
 
-    if (core.session.loaded &&
-        core.session.roms[0].rom.platform == DUALBOY_PLATFORM_GBA) {
-        native_width = 240U;
-        native_height = 160U;
+    if (core.session.loaded) {
+        if (core.session.roms[0].rom.platform == DUALBOY_PLATFORM_NDS) {
+            native_width = DUALBOY_NDS_SCREEN_WIDTH;
+            native_height = DUALBOY_NDS_SCREEN_HEIGHT * 2U;
+        } else if (core.session.roms[0].rom.platform == DUALBOY_PLATFORM_GBA) {
+            native_width = 240U;
+            native_height = 160U;
+        }
     }
     if (core.options.mode != DUALBOY_MODE_DUAL) {
         geometry.width = native_width;
@@ -963,7 +1153,7 @@ void retro_get_system_info(struct retro_system_info *info)
     memset(info, 0, sizeof(*info));
     info->library_name = "DualBoy";
     info->library_version = DUALBOY_VERSION;
-    info->valid_extensions = "gb|gbc|gba|m3u";
+    info->valid_extensions = "gb|gbc|gba|nds|m3u";
     info->need_fullpath = false;
     info->block_extract = false;
 }
@@ -973,6 +1163,7 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
     struct dualboy_geometry geometry;
     struct dualboy_compositor_config display = current_display();
     unsigned sample_rate = DUALBOY_DEFAULT_SAMPLE_RATE;
+    double frame_rate = DUALBOY_FRAME_RATE;
 
     if (info == NULL) {
         return;
@@ -988,13 +1179,21 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
             sample_rate = engine_rate;
         }
     }
+    if (core.session.loaded && core.session.engine != NULL &&
+        core.session.engine->frame_rate != NULL) {
+        const double engine_rate =
+            core.session.engine->frame_rate(core.session.pair);
+        if (engine_rate > 0.0) {
+            frame_rate = engine_rate;
+        }
+    }
     memset(info, 0, sizeof(*info));
     info->geometry.base_width = geometry.width;
     info->geometry.base_height = geometry.height;
     info->geometry.max_width = DUALBOY_MAX_COMPOSITE_WIDTH;
     info->geometry.max_height = DUALBOY_MAX_COMPOSITE_HEIGHT;
     info->geometry.aspect_ratio = geometry.aspect_ratio;
-    info->timing.fps = DUALBOY_FRAME_RATE;
+    info->timing.fps = frame_rate;
     info->timing.sample_rate = (double)sample_rate;
 }
 
@@ -1006,6 +1205,7 @@ void retro_set_controller_port_device(unsigned port, unsigned device)
         return;
     }
     if (base_device == RETRO_DEVICE_JOYPAD ||
+        base_device == RETRO_DEVICE_ANALOG ||
         base_device == RETRO_DEVICE_NONE) {
         core.port_devices[port] = base_device;
     } else {
@@ -1019,11 +1219,12 @@ void retro_set_controller_port_device(unsigned port, unsigned device)
 void retro_reset(void)
 {
     dualboy_session_reset(&core.session);
+    synchronize_fastforward_policy();
 }
 
 void retro_run(void)
 {
-    uint16_t buttons[DUALBOY_MACHINE_COUNT];
+    struct dualboy_machine_input inputs[DUALBOY_MACHINE_COUNT];
     struct dualboy_compositor_config display;
     struct dualboy_geometry geometry;
     char error[DUALBOY_ERROR_CAPACITY] = {0};
@@ -1035,10 +1236,12 @@ void retro_run(void)
         return;
     }
     update_options();
-    buttons[0] = read_port_buttons(0U);
-    buttons[1] = read_port_buttons(1U);
     display = current_display();
-    if (!dualboy_session_run(&core.session, buttons, &display, error,
+    synchronize_fastforward_policy();
+    inputs[0] = read_port_input(0U);
+    inputs[1] = read_port_input(1U);
+    apply_pointer_contacts(inputs, &display);
+    if (!dualboy_session_run(&core.session, inputs, &display, error,
                              sizeof(error))) {
         core_log(RETRO_LOG_ERROR, "emulation frame failed: %s",
                  error[0] != '\0' ? error : "unknown engine error");
@@ -1050,10 +1253,14 @@ void retro_run(void)
                        core.session.composite.height,
                        core.session.composite.pitch);
         }
-        drain_audio();
-        tick_saves();
+        /* A failed frame is not a publication boundary. Keep the last complete
+         * audio/save observation; normal unload still force-flushes once the
+         * synchronous engine call has returned quiescent. */
+        synchronize_fastforward_policy();
         return;
     }
+
+    synchronize_fastforward_policy();
 
     geometry.width = core.session.composite.width;
     geometry.height = core.session.composite.height;
@@ -1114,6 +1321,7 @@ bool retro_unserialize(const void *data, size_t size)
     core.link_request_pending = false;
     core.link_failure_logged = false;
     core.geometry_valid = false;
+    synchronize_fastforward_policy();
     return true;
 }
 

@@ -16,9 +16,9 @@ DualBoy Libretro ABI (one process-global callback context)
 content / session / options / saves / state / compositor
         |
 dualboy_engine_ops
-       / \
-SameBoy   mGBA + PR #318 SIO lockstep
-pair      pair
+       /       |       \
+SameBoy      mGBA      melonDS + upstream LocalMP
+pair         pair      pair with two frame workers
 ```
 
 Libretro's callback ABI requires one process-global frontend context. Mutable
@@ -31,14 +31,17 @@ order; partial cleanup is idempotent.
 The detector validates cartridge headers before selecting an engine. A GB/GBC
 image must contain the Nintendo logo/header region and consistent ROM-size
 metadata. A GBA image must contain the fixed header byte and a valid header
-checksum. Extensions provide an error hint and the advertised content filter but
-are not the trust boundary.
+checksum. An NDS image must contain the logo, valid logo and header CRC16 values,
+and in-bounds nonempty ARM9 and ARM7 sections. UnitCode 0 is a native DS image;
+UnitCode 2 is accepted because DSi-enhanced cartridges retain a DS-compatible
+partition. UnitCode 3 is DSi-exclusive and is rejected. Extensions provide an
+error hint and the advertised content filter but are not the trust boundary.
 
 Normal loading receives one memory-loaded cartridge and gives both machines one
 immutable owned content copy. The machines do not share mutable memory. The
 `dualboylink` subsystem requires exactly two memory-loaded cartridge slots.
-GB and GBC are one SameBoy family and may be paired; a GB/GBC and GBA mixture is
-rejected before engine creation.
+GB and GBC are one SameBoy family and may be paired; NDS, GBA, and GB/GBC
+families cannot be mixed and are rejected before engine creation.
 
 M3U is an implemented third load mode, not a subsystem alias. The playlist itself
 must be supplied by local path and is capped at 64 KiB. Its parser accepts an
@@ -46,8 +49,11 @@ optional UTF-8 BOM, ignores blank and `#` comment lines, trims horizontal
 whitespace, and requires exactly two entries. Relative entries are resolved
 lexically from the playlist directory. URLs, network-style paths, backslash-rooted
 paths, NULs, directory-only entries, and traversal above an absolute root are
-rejected. Each referenced cartridge is capped at 64 MiB. The resolved cartridge
-paths are the persistence identities; the M3U filename is not.
+rejected. Each referenced cartridge is capped at 512 MiB. The resolved cartridge
+paths are the persistence identities; the M3U filename is not. NDS normal,
+subsystem, and M3U loads use the same ownership rules as the older platforms;
+normal loading duplicates one cartridge and never creates an empty Download Play
+guest.
 
 When a frontend provides cartridge bytes without a path, the core derives a
 stable identity `dualboy-<16-digit FNV-1a hash>.<family extension>`. These
@@ -76,23 +82,71 @@ mutating either driver. During per-machine mGBA state restore, SIO mode callback
 remain observational until both machine clocks are restored; the paired link
 payload then restores queues, barriers, and coordinator time together.
 
+The melonDS adapter owns two distinct `melonDS::NDS` objects, two instance
+contexts, one untouched upstream `melonDS::LocalMP`, and two persistent worker
+threads. Each frontend frame captures both inputs, releases both workers to call
+one `NDS::RunFrame()` concurrently, waits for both completions, and then exposes
+their software framebuffers. Running linked instances concurrently is required
+because `LocalMP` can wait for the peer. Teardown wakes and joins both workers
+before destroying engine objects, including partial-load paths.
+
+The worker barrier has a ten-second soft deadline. Crossing it requests an
+abort, removes both machines from `LocalMP`, waits for both workers to become
+quiescent, and permanently poisons that pair; no failed call returns while a
+worker can still access pair-owned memory. This preserves the synchronous engine
+ownership contract, but it is not hard cancellation: if upstream
+`NDS::RunFrame()` itself never returns, the frontend thread must still wait for
+quiescence. Safely bounding that permanent-wedge case would require upstream
+cancellation support or process isolation.
+
+The platform shim derives instance IDs from per-machine userdata and exposes only
+IDs 0 and 1 to `LocalMP`, leaving upstream's 16-instance capacity unchanged.
+`MP_Begin` records a machine's request; the live link option registers it only
+while enabled, and `MP_End` or disabling the option unregisters it without
+reloading content. Stop, failure, reset, and teardown paths end registrations;
+reset also clears requested membership and stale queue/read offsets before the
+machines restart. The Libretro layer inhibits fast-forward only when both IDs are registered and
+releases the override as soon as either leaves. This transport is wholly inside
+the process: no WFC, LAN, Internet, or nested Libretro core is involved.
+
+Each NDS is created with melonDS's free BIOS implementation and its own generated
+128 KiB firmware copy. Persisted firmware is treated as untrusted: its exact
+size, generated `MELN` identity, DS Lite console type, user-settings offset, and
+all dynamic ranges used by melonDS are validated before bytes enter the live
+engine. The two deterministic locally administered MAC addresses end in `00`
+and `01`; invalid or duplicate persisted identities are repaired and checksummed
+before reset. No Nintendo BIOS or external firmware dump is bundled or loaded.
+OpenGL and the JIT are disabled; the initial adapter uses the interpreter and
+software renderer.
+
 ## Video, input, and audio
 
-Adapters return native XRGB8888 frames: 160x144 for GB/GBC and 240x160 for GBA.
-The compositor implements side-by-side, top/bottom, Player 1 only, Player 2 only,
-and a coupled screen/controller swap without scaling. Geometry changes are
-reported before the next frame.
+Adapters return native XRGB8888 frames: 160x144 for GB/GBC, 240x160 for GBA, and
+256x384 for NDS. Each NDS frame is a fixed 256x192 top screen followed by its
+256x192 bottom/touch screen. The compositor implements side-by-side, top/bottom,
+Player 1 only, Player 2 only, and a coupled screen/controller swap without
+scaling. NDS dual geometry is therefore 512x384 or 256x768. Geometry changes are
+reported before the next frame, and the maximum allocation is 512x768.
 
-Input is polled once per frontend frame and captured as two RetroPad masks.
-RetroArch port 0 maps to machine 0 and port 1 to machine 1 before an optional
-coupled swap. Machine 0 audio is resampled/buffered as interleaved signed 16-bit
-stereo. Machine 1 audio is drained without emission so it cannot stall timing.
-The audio-disabled option still drains emulated audio.
+Input is polled once per frontend frame and captured as two structured values
+containing a RetroPad mask and optional touch coordinates. RetroArch port 0 maps
+to machine 0 and port 1 to machine 1 before an optional coupled swap. During NDS
+sessions, successive pointer indices are inverse-mapped through the active
+compositor geometry and accepted only inside a displayed bottom screen, with one
+first-wins contact per DS. Each player's right analog stick plus held R3 is an
+independent stylus fallback. Machine 0 audio is resampled/buffered as interleaved
+signed 16-bit stereo. Machine 1 audio is drained without emission so it cannot
+stall timing. The audio-disabled option still drains emulated audio.
+
+GB/GBC/GBA sessions retain the existing 59.7275 Hz frontend timing. NDS reports
+the pinned engine's 59.8260982880808 Hz frame rate; all engines emit 48 kHz
+stereo from machine 0 only.
 
 ## Persistence ownership
 
-The save manager starts with every region core-managed, then delegates only the
-SameBoy regions a Libretro frontend can name unambiguously:
+The save manager makes SaveRAM and engine-relevant RTC/firmware regions
+core-managed, then delegates only the SameBoy regions a Libretro frontend can
+name unambiguously:
 
 | Engine/load | Machine 0 | Machine 1 |
 | --- | --- | --- |
@@ -102,10 +156,13 @@ SameBoy regions a Libretro frontend can name unambiguously:
 | SameBoy M3U | core-managed | core-managed |
 | SameBoy pathless slot | core-managed | core-managed for that slot |
 | mGBA, every load mode | core-managed | core-managed |
+| melonDS, every load mode | core-managed SaveRAM and firmware | core-managed SaveRAM and firmware |
 
 The canonical paths are based on the last-extension-stripped cartridge basename.
-If the two complete SRAM paths collide, machine 1 uses `.srm.2` and
-`.rtc.2`. Core-managed regions acquire sorted, nonblocking advisory locks at
+If the two complete SRAM paths collide, machine 1 uses `.srm.2`, `.rtc.2`, and
+`.firmware.bin.2`; otherwise NDS writable firmware uses `.firmware.bin` beside
+each cartridge identity. Core-managed regions acquire sorted, nonblocking
+advisory locks at
 `<region path>.dualboy.lock`. Contention makes the core-managed regions
 read-only for that session; other lock errors reject loading. Lock files are
 persistent coordination metadata.
@@ -140,8 +197,9 @@ an all-`0xff` oversized tail may normalize to the detected extent.
 
 ## Paired save states
 
-`retro_serialize_size` is a stable conservative upper bound after load. Version
-1 uses a 112-byte little-endian header beginning with `DUALBST\0`. It records
+For SameBoy and mGBA, `retro_serialize_size` is a stable conservative upper bound
+after load. Version 1 uses a 112-byte little-endian header beginning with
+`DUALBST\0`. It records
 the engine family, both platform types, link-enabled state, ROM lengths and CRCs,
 both machine payload lengths and CRCs, and the link-scheduler payload length and
 CRC, followed by all three payloads.
@@ -157,6 +215,13 @@ loading a save state changes both machines' volatile state atomically but does n
 roll either battery region backward or manufacture disk-save progress. RetroArch
 owns the save-state file separately from the battery-save manager.
 
+NDS deliberately leaves the engine state callbacks unset, so
+`retro_serialize_size()` returns zero for an NDS session. melonDS machine states
+do not include `LocalMP` queues and waits, and a transactional two-machine state
+cannot currently restore or safely abandon that transport. Manual states,
+rewind, and runahead are therefore unsupported for NDS rather than presented as
+complete. This does not change linked state behavior for SameBoy or mGBA.
+
 ## Reproducible Linux build
 
 Exact upstream revisions are Git submodule gitlinks documented in
@@ -166,3 +231,16 @@ Exact upstream revisions are Git submodule gitlinks documented in
 with the versioned package manifest under `tools/linux-x86_64`. Docker is
 explicitly asked for `linux/amd64`, so an ARM development host cannot silently
 produce the wrong architecture.
+
+The melonDS build is pinned to an exact gitlink and configured with
+`BUILD_QT_SDL`, `ENABLE_GDBSTUB`, `ENABLE_OGLRENDERER`, `ENABLE_JIT`,
+`ENABLE_LTO_RELEASE`, and `MELONDS_EMBED_BUILD_INFO` off. Upstream's `core`
+archive and the otherwise-unselected, untouched `src/net/LocalMP.cpp` translation
+unit are statically linked; all platform glue remains in DualBoy. A CMake install
+also stages `LICENSE`, `NOTICE`, `THIRD_PARTY.md`, and the selected dependency
+license texts under `share/doc/dualboy`.
+
+melonDS is GPL-3.0-or-later. Consequently the combined shared object and its
+binary distribution are conveyed under GPLv3-compatible terms, while
+DualBoy-authored files retain their MPL-2.0 notices. The exact dependency and
+bundled-source license inventory is in [`THIRD_PARTY.md`](../THIRD_PARTY.md).

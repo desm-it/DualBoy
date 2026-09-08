@@ -40,6 +40,17 @@ bool dualboy_compositor_geometry(const struct dualboy_video_frame frames[2],
                                  const struct dualboy_compositor_config *config,
                                  struct dualboy_geometry *geometry);
 
+/* Maps a composite-image pixel to the logical frontend port occupying that
+ * display slot and to coordinates within its unscaled machine frame. */
+bool dualboy_compositor_map_point(
+    const struct dualboy_video_frame frames[2],
+    const struct dualboy_compositor_config *config,
+    unsigned composite_x,
+    unsigned composite_y,
+    unsigned *port,
+    unsigned *machine_x,
+    unsigned *machine_y);
+
 bool dualboy_compose_frame(uint32_t *output,
                            size_t output_pixels,
                            const struct dualboy_video_frame frames[2],

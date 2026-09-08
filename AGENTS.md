@@ -2,7 +2,8 @@
 
 DualBoy is one Libretro frontend that owns exactly two emulator instances. GB/GBC
 uses SameBoy; GBA uses mGBA plus the cooperative SIO lockstep implementation from
-libretro/mgba PR #318. Never load another Libretro core from this core.
+libretro/mgba PR #318; NDS uses two melonDS objects plus upstream same-process
+`LocalMP`. Never load another Libretro core from this core.
 
 ## Layout and ownership
 
@@ -10,8 +11,8 @@ libretro/mgba PR #318. Never load another Libretro core from this core.
 - `src/frontend/`: content detection/loading, M3U parsing, composition,
   persistence, options, session ownership, and paired-state container code. It
   must not depend on engine-private structs.
-- `src/engines/{sameboy,mgba}/`: adapters that exclusively own engine objects
-  and translate the common pair interface.
+- `src/engines/{sameboy,mgba,melonds}/`: adapters that exclusively own engine
+  objects and translate the common pair interface.
 - `third_party/`: pinned Git submodules; do not edit them. Put adaptations in
   `src/`.
 - `tests/`: unit/integration harnesses and source-generated legal test ROMs.
@@ -55,15 +56,19 @@ native sanitizer suite, and exported-symbol check before a release claim.
 
 - DualBoy-authored source is MPL-2.0. Preserve SameBoy's Expat notice and the
   Libretro header's MIT notice; mGBA and PR-derived files remain MPL-2.0.
+  melonDS is GPL-3.0-or-later, so the statically linked combined binary and its
+  distribution are governed by GPLv3-compatible terms; keep installed notices
+  and `THIRD_PARTY.md` synchronized with the build.
 - Update dependency pins only with the audit procedure in `THIRD_PARTY.md`.
 - Do not use commercial ROMs. Test content must be generated from source or carry
   an explicit redistributable license.
 - Do not claim real RetroArch, Steam Deck, or commercial-game validation until it
   is actually performed and recorded in `docs/status.md` with the
   command/device and result.
-- The MVP implementation includes both engine adapters, normal/subsystem/M3U
-  loading, options, independent persistence, paired save states, and Libretro ABI
-  integration. The strict x86-64, native sanitizer, symbol, and install-tree gates
-  pass. Real RetroArch and Steam Deck gates remain governed by `docs/status.md`.
+- GB/GBC/GBA and NDS support normal/subsystem/M3U loading, options, independent
+  persistence, and Libretro ABI integration. Paired states remain available for
+  GB/GBC/GBA; NDS manual states, rewind, and runahead are unsupported because
+  `LocalMP` transport state is not serializable. Validation claims and remaining
+  real-RetroArch and Steam Deck gates remain governed by `docs/status.md`.
 - Preserve the documented SameBoy subsystem RTC caveat until a real frontend is
   shown to persist both custom RTC memory IDs independently.

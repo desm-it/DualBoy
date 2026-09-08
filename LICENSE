@@ -1,3 +1,17 @@
+DualBoy licensing overview
+==========================
+
+DualBoy-authored source files carrying the MPL notice remain licensed under the
+Mozilla Public License 2.0, whose complete text follows below. mGBA-derived
+source remains MPL-2.0, SameBoy remains under the Expat license, and the
+Libretro API header remains under its embedded MIT notice.
+
+The built dualboy_libretro binary statically includes melonDS, licensed
+GPL-3.0-or-later. The combined binary and a distribution containing it are
+therefore conveyed under GPLv3-compatible terms. The complete GPLv3 text is at
+third_party/melonDS/LICENSE and is included in the CMake install tree. See NOTICE
+and THIRD_PARTY.md for the complete component inventory and exact revisions.
+
 Mozilla Public License Version 2.0
 ==================================
 

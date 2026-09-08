@@ -1,48 +1,125 @@
 # Implementation status
 
-Last updated: 2026-09-07.
+Last updated: 2026-09-08.
 
-DualBoy's MVP feature set is implemented. The strict Linux x86-64 release suite,
-native Linux sanitizer suite, exported-symbol check, and install-tree check pass.
-The core has also been installed and launched by a real RetroArch Flatpak on a
-physical Steam Deck. This document separates those observed results from still
-unverified controller, persistence, suspend/resume, and compatibility boundaries.
+DualBoy now has a Nintendo DS engine implementation in addition to its existing
+GB/GBC/GBA engines. The post-integration Linux x86-64 release suite and generated
+content tests are recorded below. This document separates that automated
+evidence from still-unverified real-RetroArch, retail/local-wireless, physical
+controller, performance, suspend/resume, and compatibility boundaries.
 
 ## Verified upstream facts
 
-- SameBoy, the libretro/mgba PR #318 snapshot, canonical mGBA, the Libretro API
-  header, and their licenses were inspected at the exact revisions recorded in
-  [`THIRD_PARTY.md`](../THIRD_PARTY.md).
+- SameBoy, the libretro/mgba PR #318 snapshot, canonical mGBA, melonDS, the
+  Libretro API header, and their licenses were inspected at the exact revisions
+  recorded in [`THIRD_PARTY.md`](../THIRD_PARTY.md).
 - GitHub reported
   [libretro/mgba PR #318](https://github.com/libretro/mgba/pull/318) open,
-  unmerged, non-draft, and conflicting on 2026-09-07. Its head remained
+  unmerged, non-draft, and conflicting on 2026-09-08. Its head remained
   `fa743c965939f091350df094f57e639933bc17e3`, the pinned submodule commit.
+- melonDS `906e9ebb27da8c6a715cd7abab4abfe8a8d29427` and tree
+  `60c6724f8695bdbe5e21c4367b18293f7f811fc2` were pinned as an untouched
+  submodule. On 2026-09-08 that commit matched upstream `HEAD` and `master`.
+  The root license and selected bundled-source licenses were audited; the static
+  combined binary is governed by GPLv3-compatible distribution terms.
+- `JesseTG/melonds-ds` commit
+  `bc4e4b67d2d470d7c682810a1e892cafd6f9082b` was inspected as a pattern
+  reference only and is not a production dependency.
 - The pinned Linux build environment ran as `linux/amd64` on the ARM64
   development host, and earlier artifacts were identified as x86-64 ELF shared
   objects built by GCC 12.2.0.
 
-## Current strict Linux x86-64 result
+## Current post-NDS build and test results
 
-The final source tree completed the reference container command successfully:
+On the final 2026-09-08 source, the exact primary release gate completed in the
+digest-pinned `linux/amd64` container on an ARM64 Docker host:
 
 ```text
 make test-linux-x86_64
-100% tests passed, 0 tests failed out of 8
-Total Test time (real) = 29.28 sec
-sameboy_adapter_unit: 9.70 seconds
-mgba_adapter_unit: 4.61 seconds
-libretro_abi_smoke: 14.53 seconds
+100% tests passed, 0 tests failed out of 10
+Total Test time (real) = 60.62 sec
+sameboy_adapter_unit: 8.68 seconds
+mgba_adapter_unit: 5.05 seconds
+melonds_adapter_unit: 10.58 seconds
+libretro_abi_smoke: 17.81 seconds
+libretro_nds_pointer_integration: 17.93 seconds
 ```
 
-The eight passing tests were `frontend_unit`, `session_unit`,
+The ten passing tests were `frontend_unit`, `session_unit`,
 `state_unit`, `persistence_unit`, `save_manager_unit`,
-`sameboy_adapter_unit`, `mgba_adapter_unit`, and
-`libretro_abi_smoke`.
+`sameboy_adapter_unit`, `mgba_adapter_unit`, `melonds_adapter_unit`,
+`libretro_abi_smoke`, and `libretro_nds_pointer_integration`. The preceding
+explicit `make linux-x86_64` release build also completed successfully with
+`DUALBOY_WARNINGS_AS_ERRORS=ON`.
 
-## Test coverage present in the tree
+A native Linux ARM64 RelWithDebInfo diagnostic configured with warnings as
+errors, rebuilt the current source, and passed the same 10/10 tests in 6.03
+seconds. `git submodule update --init --recursive` succeeded and reported the
+four exact revisions in `THIRD_PARTY.md`; `third_party/melonDS` remained clean.
+
+The handoff's three direct host commands were attempted and each exited 127
+because this macOS host has neither `cmake` nor `ctest` installed:
+
+```text
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+zsh: command not found: cmake
+
+cmake --build build
+zsh: command not found: cmake
+
+ctest --test-dir build --output-on-failure
+zsh: command not found: ctest
+```
+
+The aggregate host target was also attempted and failed at its configure step:
+
+```text
+make test
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+make: cmake: No such file or directory
+make: *** [build/build.ninja] Error 1
+```
+
+The container builds above execute the same configure/build/CTest phases; the
+missing host tool is an environment limitation, not recorded as a host-build
+pass.
+
+## NDS implementation now present
+
+Source inspection of the current working tree shows:
+
+- the exact untouched melonDS gitlink built internally with its desktop
+  frontend, OpenGL renderer, JIT, GDB stub, release LTO, and embedded build
+  metadata disabled;
+- two `melonDS::NDS` objects with distinct userdata, video, cartridge SaveRAM,
+  128 KiB generated firmware, locally administered MAC addresses, and persistent
+  frame workers;
+- one pair-owned upstream `LocalMP`, with its 16-instance capacity unchanged but
+  DualBoy registering only IDs 0 and 1 and allowing link enable/disable without
+  content reload;
+- dynamic Libretro fast-forward inhibition only while both NDS instances report
+  themselves joined to the enabled transport;
+- fixed 256x384 top-over-bottom per-machine frames, structured controller/touch
+  input, compositor-aware bottom-screen pointer routing, and per-player
+  right-stick/R3 stylus fallback;
+- normal same-ROM, subsystem, and M3U NDS selection with strict header detection
+  and mixed-family rejection; and
+- core-managed independent `.srm` and `.firmware.bin` files, with collision
+  suffixes for duplicated cartridge identities.
+
+NDS state callbacks are intentionally absent: manual savestates, rewind, and
+runahead are unsupported instead of pretending that machine state contains the
+pair-owned `LocalMP` queues. The required per-core override is:
+
+```ini
+rewind_enable = "false"
+run_ahead_enabled = "false"
+```
+
+## Automated coverage exercised
 
 The repository's test sources use generated synthetic ROMs rather than commercial
-content. Source inspection confirms that the registered tests cover:
+content. The passing native and x86-64 runs above exercised:
 
 - Nintendo-header detection, family compatibility, composition geometry,
   player-only layouts, and coupled screen/controller swap;
@@ -66,38 +143,67 @@ content. Source inspection confirms that the registered tests cover:
   changes per machine, with lossless event delivery, a measured queue high-water
   below the eight-event capacity, converged peer modes, and a subsequent
   two-way multiplayer transfer; and
-- dynamic loading of the built Libretro core, ABI/interface registration, normal,
-  subsystem, pathless, and M3U content paths, live option changes, paired state,
-  SameBoy and GBA execution, and exact 32 KiB generated-ROM GBA saves.
+- dynamic loading of the production shared object, ABI/interface registration,
+  normal, subsystem, pathless, and M3U content paths, live option changes,
+  paired state, SameBoy and GBA execution, and exact 32 KiB generated-ROM GBA
+  saves;
+- strict NDS header and CRC validation, NDS/non-NDS mixed-family rejection,
+  512x384/256x768 compositor geometry, and inverse point mapping;
+- two live melonDS objects executing generated ARM programs concurrently,
+  distinct userdata, controls, touch coordinates, 256x384 video buffers,
+  cartridge SaveRAM, validated generated firmware and unique persistent MAC
+  addresses, plus partial and repeated load/unload cleanup;
+- `LocalMP` registration restricted to IDs 0 and 1, a raw same-process packet
+  round trip, live link disable/re-enable, transport-active transitions, and a
+  stopped-worker failure followed by reset/recovery;
+- a generated ARM7 program writing emulated `POWCNT2` and `W_POWER_US`, causing
+  each real melonDS Wi-Fi device to reach `Platform::MP_Begin`; dynamic
+  fast-forward inhibition then activates, clears when link is disabled, and
+  returns when both machines rejoin;
+- two simultaneous pointer indices passed through the public Libretro callbacks,
+  the production compositor transform, two real melonDS objects, and actual TSC
+  conversion reads with independently asserted coordinates;
+- a deterministic held-worker deadline test proving that a timed-out frame does
+  not return before both workers quiesce, that the pair is poisoned, and that
+  memory access and destruction are safe afterward; and
+- distinct melonDS cartridge saves written through a real upstream 8 KiB EEPROM
+  SPI transaction plus firmware sentinels flushed to collision-safe files, both
+  engines destroyed, and the bytes loaded into recreated live engine objects.
 
-These bullets describe the assertions exercised by the passing current suite.
-They remain synthetic-harness results, not retail-game or real-RetroArch
-compatibility claims.
+These are synthetic-harness results, not retail-game or real-RetroArch
+compatibility claims. The generated cartridges and ARM instructions are authored
+in the test sources; the fixed NDS logo bytes are hardware-mandated header data.
+No downloaded homebrew, commercial program, Nintendo BIOS, or firmware dump was
+used.
 
-The engine disk round trips prove more than buffer independence: guest code first
-changes each live engine's SaveRAM, distinct per-machine sentinels are flushed,
-both engine pairs are destroyed, new pairs are created with poisoned/blank
-memory, and a new save manager loads the expected bytes from separate on-disk
-paths. The SameBoy case performs the same destroy/recreate check for its separate
-RTC regions. A test that only compared two live pointers would not establish
-cross-lifetime persistence.
+The disk round trips prove more than buffer independence. Generated guest code
+changes SameBoy and mGBA SaveRAM. For NDS, a test-only hook drives the real
+upstream `CartRetail` EEPROM SPI protocol and its `Platform::WriteNDSSave`
+callback; it is not an ARM guest save program. Distinct per-machine bytes are
+flushed, both engine pairs are destroyed, new pairs are created, and a new save
+manager loads the expected bytes from separate files. The SameBoy case also
+checks its separate RTC regions.
 
-## Sanitizer, symbol, and package results
+## Current sanitizer, symbol, and package results
 
-The complete suite also passed with AddressSanitizer and UndefinedBehaviorSanitizer
-in a native Linux container on the ARM64 development host:
+The current source completed the native ARM64 ASan+UBSan command:
 
 ```text
 make asan-linux-native
-100% tests passed, 0 tests failed out of 8
-Total Test time (real) = 24.84 sec
+100% tests passed, 0 tests failed out of 10
+Total Test time (real) = 106.03 sec
 ```
 
-`make asan-linux-x86_64` was attempted on this ARM64 Docker Desktop host. All
-eight x86-64 ASan processes were killed by the emulation environment before test
-code produced output; verbose diagnosis showed the ASan interceptor/address-space
-setup failing under emulated `linux/amd64`. This is why the Makefile has a native
-sanitizer gate. It is not recorded as an x86-64 sanitizer pass.
+This is not a clean UBSan claim. CTest returned success and the log contains no
+AddressSanitizer error, but its passing-test output contains 22 recoverable UBSan
+diagnostics: six from untouched SameBoy (`gb.c` null-pointer argument and
+`sm83_cpu.c` negative shift) and sixteen from untouched melonDS (`CP15.cpp` and
+`NDS.cpp` unaligned 32-bit accesses plus `SPU.cpp` zero-bound VLA). The melonDS
+diagnostics occur in the real adapter and Libretro integration tests. Upstream is
+intentionally unmodified, so these are recorded sanitizer blockers/technical
+debt rather than suppressed or represented as a clean pass. An emulated
+`linux/amd64` ASan process is not used on this ARM host because its virtual
+address-space setup is unreliable.
 
 `make symbols-linux-x86_64` printed:
 
@@ -105,7 +211,7 @@ sanitizer gate. It is not recorded as an x86-64 sanitizer pass.
 Libretro export check passed for build-linux-x86_64/dualboy_libretro.so
 ```
 
-The release build was installed with:
+The current release build was installed with:
 
 ```sh
 docker run --rm --platform linux/amd64 -u "$(id -u):$(id -g)" \
@@ -113,7 +219,14 @@ docker run --rm --platform linux/amd64 -u "$(id -u):$(id -g)" \
   cmake --install build-linux-x86_64 --prefix /src/dist/linux-x86_64
 ```
 
-The resulting install tree contains:
+The install tree contains the core and metadata plus `LICENSE`, `NOTICE`,
+`THIRD_PARTY.md`, and these eight component texts under
+`share/doc/dualboy/licenses`: `FatFs.txt`, `FreeBIOS-BSD-2-Clause.txt`,
+`SameBoy-Expat.txt`, `Teakra-MIT.txt`, `blip-buf-LGPL-2.1.txt`,
+`mGBA-MPL-2.0.txt`, `melonDS-GPL-3.0.txt`, and
+`tiny-AES-c-Unlicense.txt`.
+
+The primary artifacts are:
 
 ```text
 dist/linux-x86_64/lib/libretro/dualboy_libretro.so
@@ -124,20 +237,27 @@ dist/linux-x86_64/share/libretro/info/dualboy_libretro.info
 x86-64 (`Advanced Micro Devices X86-64`), dynamically linked. The files have:
 
 ```text
-e4a6f500df977deb0962e81987345ec13e8cbbc408b924e03ed1992494ea0260  dualboy_libretro.so
-3ea55624bb8661d1336a239207fdd81109df37ea1e5c7c48aea0d038737685c4  dualboy_libretro.info
+f1783c419bac6e20b3a30b0a969de5b5b6c0d72147148a2941d8f16c34338259  dualboy_libretro.so
+f16a80e35815d46705b92f5ef45b117ec78a7395ee59535ee4b63570e21f83be  dualboy_libretro.info
 ```
 
-The installed shared object passed the same Libretro export allowlist check.
+The installed shared object also passed `tools/check-libretro-symbols.sh`; no
+melonDS, adapter-test, or nested Libretro entrypoint is exported. The first host
+`shasum` attempt was interrupted by that host's invalid `C.UTF-8` Perl locale;
+`sha256sum` in the pinned Linux container produced the hashes above.
 
 ## Implemented MVP surface
 
-Source and test inspection show these components in the working tree:
+Implementation plus the automated evidence above establish these components:
 
 - one exported Libretro core, XRGB8888 output, two RetroPad ports, 59.7275 Hz
-  timing, and 48 kHz stereo output sourced only from machine 0;
+  timing for GB/GBC/GBA, 59.8260982880808 Hz for NDS, and 48 kHz stereo output
+  sourced only from machine 0;
 - two-instance SameBoy for GB/GBC and two-instance mGBA with the adapted PR #318
   cooperative SIO scheduler for GBA;
+- two-instance melonDS with two concurrent frame workers, software rendering,
+  built-in BIOS replacements, independent generated firmware, and pair-owned
+  upstream same-process `LocalMP` for NDS;
 - normal same-ROM, exactly-two-ROM `dualboylink` subsystem, and exactly-two-entry
   local M3U loading, with header-first detection and mixed-family rejection;
 - side-by-side, top/bottom, Player 1 only, Player 2 only, coupled swap, link
@@ -147,8 +267,9 @@ Source and test inspection show these components in the working tree:
   `.dualboy.lock` coordination, and read-only behavior under contention;
 - stable 128 KiB mGBA SaveRAM shadows with dynamically detected on-disk extents;
   and
-- one versioned, checksummed, transactional container for both machines and link
-  state, with battery memory separated from state rollback.
+- one versioned, checksummed, transactional container for both SameBoy or mGBA
+  machines and link state, with battery memory separated from state rollback;
+  NDS states remain disabled.
 
 This inventory is not a compatibility statement for retail software.
 
@@ -182,8 +303,31 @@ such error remains a potential desynchronization and should be investigated.
 
 ## Unverified runtime boundaries and known MVP limits
 
-- Real RetroArch and Steam Deck loading is verified, but controller ordering,
+- A pre-NDS build loaded in real RetroArch on Steam Deck, but controller ordering,
   performance, suspend/resume, and long-session persistence remain unverified.
+- No NDS content has yet been loaded in a real RetroArch process or on a physical
+  Steam Deck. The earlier Deck launch and GBA crash investigation do not validate
+  the NDS path.
+- No source-built or explicitly redistributable guest program has completed an
+  emulated NDS local-wireless session. The generated ARM7 fixture powers on both
+  emulated Wi-Fi devices and reaches `MP_Begin`, while a separate adapter test
+  sends a raw packet through upstream `LocalMP`; no guest program sends or
+  receives that packet. Retail/local-wireless compatibility remains unverified.
+- Two simultaneous Libretro pointer indices have not yet been verified on the
+  physical Deck/input-driver combination. The public-ABI automated test reaches
+  two real melonDS TSC devices, but that does not establish hardware-driver
+  behavior.
+- NDS manual states, rewind, and runahead are unsupported. Users must disable
+  rewind and runahead in the per-core override.
+- NDS reports 59.8260982880808 Hz; GB/GBC/GBA retain 59.7275 Hz. NDS timing and
+  performance have not been measured in a real frontend.
+- The NDS ten-second worker deadline is soft. It safely poisons a pair and waits
+  for quiescence, but a permanently wedged upstream `NDS::RunFrame()` cannot be
+  cancelled and can still block `retro_run()` or unload indefinitely. Hard
+  bounding requires upstream cancellation support or process isolation.
+- The native sanitizer command exits successfully and has no ASan finding, but
+  its log contains the 22 untouched-upstream UBSan diagnostics recorded above;
+  this is not a clean UBSan pass.
 - Commercial games were used only for user-run startup/crash observation. No
   commercial ROMs are stored in this repository, and no broad compatibility or
   gameplay-completion claim is made.
@@ -193,9 +337,10 @@ such error remains a potential desynchronization and should be investigated.
   core-managed independent RTC files until this is resolved.
 - Only machine 0 / Player 1 audio is emitted. There is no mixer or machine-1 audio
   selection.
-- Link netplay, wireless multiplayer, fast-forward coordination, rewind
-  coordination, and core-managed cheats are outside the MVP. Cheat callbacks are
-  no-ops.
+- There is no Internet/WFC, LAN or RetroArch netplay, real-DS connectivity,
+  Download Play, DSi system/DSiWare, Slot-2 integration, machine-1 audio, or
+  core-managed cheats. DS-compatible UnitCode 2 cartridges are accepted in DS
+  mode; DSi-exclusive UnitCode 3 content is rejected. Cheat callbacks are no-ops.
 - GBA link topology changes reset both machines by design.
 - Lockstep timestamp ordering uses the standard 32-bit modular half-range rule.
   All actual event intervals are far below half the clock range, but a continuous
@@ -206,6 +351,7 @@ such error remains a potential desynchronization and should be investigated.
 
 The development host is macOS ARM64. Docker supplies both the pinned Debian
 `linux/amd64` release environment and a native Linux ARM64 sanitizer environment.
-Native host/container diagnostics do not replace the passing Linux x86-64 release
-suite. Neither a RetroArch executable nor Steam Deck hardware was available in
-the recorded test environment.
+Native host/container diagnostics do not replace a Linux x86-64 release suite.
+Neither a RetroArch executable nor Steam Deck hardware was available in the NDS
+implementation environment; the earlier physical Deck observation was a separate
+user-run pre-NDS test.

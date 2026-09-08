@@ -26,6 +26,7 @@ enum dualboy_persistence_result {
 struct dualboy_save_paths {
     char sram[DUALBOY_MACHINE_COUNT][DUALBOY_PATH_CAPACITY];
     char rtc[DUALBOY_MACHINE_COUNT][DUALBOY_PATH_CAPACITY];
+    char firmware[DUALBOY_MACHINE_COUNT][DUALBOY_PATH_CAPACITY];
     bool second_uses_collision_suffix;
 };
 
@@ -53,11 +54,15 @@ dualboy_join_save_path(const char *save_directory,
                        size_t capacity);
 
 /* Produces canonical RetroArch paths for two machines. When the initially
- * derived full SRAM paths collide, machine 1 receives .srm.2 and .rtc.2. */
+ * derived full SRAM paths collide, machine 1 receives .srm.2 and .rtc.2.
+ * When include_firmware is true, it also receives .firmware.bin.2; otherwise
+ * firmware paths remain empty so non-NDS loads are not constrained by an
+ * unused longer suffix. */
 enum dualboy_persistence_result
 dualboy_build_save_paths(const char *save_directory,
                          const char *first_content_path,
                          const char *second_content_path,
+                         bool include_firmware,
                          struct dualboy_save_paths *paths);
 
 /* Converts a canonical .srm or .srm.2 name to the corresponding optional

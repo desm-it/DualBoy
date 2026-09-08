@@ -255,7 +255,8 @@ bool dualboy_session_set_link(struct dualboy_session *session,
 }
 
 bool dualboy_session_run(struct dualboy_session *session,
-                         const uint16_t port_buttons[DUALBOY_MACHINE_COUNT],
+                         const struct dualboy_machine_input
+                             port_inputs[DUALBOY_MACHINE_COUNT],
                          const struct dualboy_compositor_config *display,
                          char *error,
                          size_t error_size)
@@ -264,8 +265,10 @@ bool dualboy_session_run(struct dualboy_session *session,
     unsigned port;
 
     if (session == NULL || !session->loaded || session->engine == NULL ||
-        port_buttons == NULL || display == NULL ||
-        session->engine->set_input == NULL || session->engine->run_frame == NULL ||
+        port_inputs == NULL || display == NULL ||
+        (session->engine->set_machine_input == NULL &&
+         session->engine->set_input == NULL) ||
+        session->engine->run_frame == NULL ||
         session->engine->video_frame == NULL) {
         set_error(error, error_size, "cannot run an incomplete DualBoy session");
         return false;
@@ -274,7 +277,13 @@ bool dualboy_session_run(struct dualboy_session *session,
     for (port = 0U; port < DUALBOY_MACHINE_COUNT; ++port) {
         const unsigned machine =
             dualboy_machine_for_port(port, display->swap_players);
-        session->engine->set_input(session->pair, machine, port_buttons[port]);
+        if (session->engine->set_machine_input != NULL) {
+            session->engine->set_machine_input(session->pair, machine,
+                                               &port_inputs[port]);
+        } else {
+            session->engine->set_input(session->pair, machine,
+                                       port_inputs[port].buttons);
+        }
     }
     if (!session->engine->run_frame(session->pair, error, error_size)) {
         return false;

@@ -80,16 +80,72 @@ static void make_gba_header(uint8_t *rom, size_t size)
     rom[0xBDU] = (uint8_t)(checksum - 0x19U);
 }
 
+static void put_u16_le(uint8_t *destination, uint16_t value)
+{
+    destination[0] = (uint8_t)value;
+    destination[1] = (uint8_t)(value >> 8U);
+}
+
+static void put_u32_le(uint8_t *destination, uint32_t value)
+{
+    destination[0] = (uint8_t)value;
+    destination[1] = (uint8_t)(value >> 8U);
+    destination[2] = (uint8_t)(value >> 16U);
+    destination[3] = (uint8_t)(value >> 24U);
+}
+
+static uint16_t nds_crc16(const uint8_t *data, size_t size)
+{
+    uint16_t crc = UINT16_C(0xffff);
+    size_t index;
+
+    for (index = 0U; index < size; ++index) {
+        unsigned bit;
+
+        crc = (uint16_t)(crc ^ data[index]);
+        for (bit = 0U; bit < 8U; ++bit) {
+            crc = (crc & 1U) != 0U
+                      ? (uint16_t)((crc >> 1U) ^ UINT16_C(0xa001))
+                      : (uint16_t)(crc >> 1U);
+        }
+    }
+    return crc;
+}
+
+static void make_nds_header(uint8_t *rom, size_t size)
+{
+    memset(rom, 0, size);
+    memcpy(rom, "DUALBOY NDS ", 12U);
+    memcpy(rom + 0x0cU, "DBNE", 4U);
+    memcpy(rom + 0x10U, "DB", 2U);
+    put_u32_le(rom + 0x20U, UINT32_C(0x200));
+    put_u32_le(rom + 0x24U, UINT32_C(0x02000000));
+    put_u32_le(rom + 0x28U, UINT32_C(0x02000000));
+    put_u32_le(rom + 0x2cU, UINT32_C(4));
+    put_u32_le(rom + 0x30U, UINT32_C(0x204));
+    put_u32_le(rom + 0x34U, UINT32_C(0x03800000));
+    put_u32_le(rom + 0x38U, UINT32_C(0x03800000));
+    put_u32_le(rom + 0x3cU, UINT32_C(4));
+    put_u32_le(rom + 0x80U, (uint32_t)size);
+    put_u32_le(rom + 0x84U, UINT32_C(0x200));
+    memcpy(rom + 0xc0U, test_gba_logo, sizeof(test_gba_logo));
+    put_u16_le(rom + 0x15cU,
+               nds_crc16(rom + 0xc0U, sizeof(test_gba_logo)));
+    put_u16_le(rom + 0x15eU, nds_crc16(rom, 0x15eU));
+}
+
 static bool test_detection(void)
 {
     uint8_t gb[0x8000U];
     uint8_t gbc[0x8000U];
     uint8_t gba[0x200U];
+    uint8_t nds[0x1000U];
     struct dualboy_detection detection;
 
     make_gb_header(gb, sizeof(gb), false);
     make_gb_header(gbc, sizeof(gbc), true);
     make_gba_header(gba, sizeof(gba));
+    make_nds_header(nds, sizeof(nds));
 
     detection = dualboy_detect_content(gb, sizeof(gb));
     CHECK(detection.error == DUALBOY_DETECT_OK);
@@ -98,6 +154,19 @@ static bool test_detection(void)
     CHECK(detection.platform == DUALBOY_PLATFORM_GBC);
     detection = dualboy_detect_content(gba, sizeof(gba));
     CHECK(detection.platform == DUALBOY_PLATFORM_GBA);
+    detection = dualboy_detect_content(nds, sizeof(nds));
+    CHECK(detection.error == DUALBOY_DETECT_OK);
+    CHECK(detection.platform == DUALBOY_PLATFORM_NDS);
+    nds[0x12U] = 2U;
+    put_u16_le(nds + 0x15eU, nds_crc16(nds, 0x15eU));
+    CHECK(dualboy_detect_content(nds, sizeof(nds)).platform ==
+          DUALBOY_PLATFORM_NDS);
+    nds[0x12U] = 3U;
+    put_u16_le(nds + 0x15eU, nds_crc16(nds, 0x15eU));
+    CHECK(dualboy_detect_content(nds, sizeof(nds)).platform ==
+          DUALBOY_PLATFORM_INVALID);
+    nds[0x12U] = 0U;
+    put_u16_le(nds + 0x15eU, nds_crc16(nds, 0x15eU));
 
     gb[0x14DU] ^= 1U;
     CHECK(dualboy_detect_content(gb, sizeof(gb)).platform ==
@@ -106,13 +175,28 @@ static bool test_detection(void)
     CHECK(dualboy_detect_content(gba, sizeof(gba)).platform ==
           DUALBOY_PLATFORM_INVALID);
     CHECK(dualboy_detect_content(NULL, 0U).error == DUALBOY_DETECT_EMPTY);
+    nds[0x15eU] ^= 1U;
+    CHECK(dualboy_detect_content(nds, sizeof(nds)).platform ==
+          DUALBOY_PLATFORM_INVALID);
+    nds[0x15eU] ^= 1U;
+    put_u32_le(nds + 0x30U, UINT32_C(0x1000));
+    put_u16_le(nds + 0x15eU, nds_crc16(nds, 0x15eU));
+    CHECK(dualboy_detect_content(nds, sizeof(nds)).platform ==
+          DUALBOY_PLATFORM_INVALID);
 
     CHECK(dualboy_platforms_compatible(DUALBOY_PLATFORM_GB,
                                        DUALBOY_PLATFORM_GBC));
     CHECK(!dualboy_platforms_compatible(DUALBOY_PLATFORM_GB,
                                         DUALBOY_PLATFORM_GBA));
+    CHECK(dualboy_platforms_compatible(DUALBOY_PLATFORM_NDS,
+                                       DUALBOY_PLATFORM_NDS));
+    CHECK(!dualboy_platforms_compatible(DUALBOY_PLATFORM_NDS,
+                                        DUALBOY_PLATFORM_GBA));
     CHECK(dualboy_engine_family_for_platform(DUALBOY_PLATFORM_GBA) ==
           DUALBOY_ENGINE_MGBA);
+    CHECK(dualboy_engine_family_for_platform(DUALBOY_PLATFORM_NDS) ==
+          DUALBOY_ENGINE_MELONDS);
+    CHECK(strcmp(dualboy_platform_name(DUALBOY_PLATFORM_NDS), "NDS") == 0);
     return true;
 }
 
@@ -170,9 +254,60 @@ static bool test_compositor(void)
     return true;
 }
 
+static bool test_nds_geometry_and_point_mapping(void)
+{
+    const uint32_t placeholder[1] = {0U};
+    const struct dualboy_video_frame frames[2] = {
+        {placeholder, 256U, 384U, 256U * sizeof(uint32_t)},
+        {placeholder, 256U, 384U, 256U * sizeof(uint32_t)},
+    };
+    struct dualboy_compositor_config config = {
+        DUALBOY_MODE_DUAL,
+        DUALBOY_LAYOUT_SIDE_BY_SIDE,
+        false,
+    };
+    struct dualboy_geometry geometry;
+    unsigned port;
+    unsigned x;
+    unsigned y;
+
+    CHECK(dualboy_compositor_geometry(frames, &config, &geometry));
+    CHECK(geometry.width == 512U && geometry.height == 384U);
+    CHECK(dualboy_compositor_map_point(frames, &config, 10U, 200U,
+                                       &port, &x, &y));
+    CHECK(port == 0U && x == 10U && y == 200U);
+    CHECK(dualboy_compositor_map_point(frames, &config, 300U, 300U,
+                                       &port, &x, &y));
+    CHECK(port == 1U && x == 44U && y == 300U);
+
+    config.swap_players = true;
+    CHECK(dualboy_compositor_map_point(frames, &config, 10U, 200U,
+                                       &port, &x, &y));
+    CHECK(port == 0U && x == 10U && y == 200U);
+
+    config.swap_players = false;
+    config.layout = DUALBOY_LAYOUT_TOP_BOTTOM;
+    CHECK(dualboy_compositor_geometry(frames, &config, &geometry));
+    CHECK(geometry.width == 256U && geometry.height == 768U);
+    CHECK(dualboy_compositor_map_point(frames, &config, 100U, 600U,
+                                       &port, &x, &y));
+    CHECK(port == 1U && x == 100U && y == 216U);
+
+    config.mode = DUALBOY_MODE_PLAYER2;
+    CHECK(dualboy_compositor_geometry(frames, &config, &geometry));
+    CHECK(geometry.width == 256U && geometry.height == 384U);
+    CHECK(dualboy_compositor_map_point(frames, &config, 255U, 383U,
+                                       &port, &x, &y));
+    CHECK(port == 1U && x == 255U && y == 383U);
+    CHECK(!dualboy_compositor_map_point(frames, &config, 256U, 383U,
+                                        &port, &x, &y));
+    return true;
+}
+
 int main(void)
 {
-    if (!test_detection() || !test_compositor()) {
+    if (!test_detection() || !test_compositor() ||
+        !test_nds_geometry_and_point_mapping()) {
         return EXIT_FAILURE;
     }
     puts("frontend tests passed");
