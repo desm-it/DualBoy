@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "engines/melonds/nds_adapter_test.h"
+#include "engines/melonds/nds_platform_bridge.hpp"
 #include "frontend/engine.h"
 
 extern "C" {
@@ -136,6 +137,63 @@ struct PairOwner {
         }
     }
 };
+
+struct LogCapture {
+    unsigned count = 0U;
+    dualboy_log_level level = DUALBOY_LOG_DEBUG;
+    std::string message;
+};
+
+void CaptureLog(void *opaque,
+                dualboy_log_level level,
+                const char *message)
+{
+    auto *capture = static_cast<LogCapture *>(opaque);
+    if (capture == nullptr) return;
+    ++capture->count;
+    capture->level = level;
+    capture->message = message != nullptr ? message : "";
+}
+
+struct PlatformConfigurationGuard {
+    PlatformConfigurationGuard(dualboy_log_fn log, void *context)
+    {
+        dualboy_melonds_platform::Configure(log, context, ".");
+    }
+
+    PlatformConfigurationGuard(const PlatformConfigurationGuard &) = delete;
+    PlatformConfigurationGuard &operator=(const PlatformConfigurationGuard &) = delete;
+
+    ~PlatformConfigurationGuard()
+    {
+        dualboy_melonds_platform::ClearConfiguration();
+    }
+};
+
+bool TestMelonDSDebugLogsAreSuppressed()
+{
+    LogCapture capture;
+    const PlatformConfigurationGuard configuration(CaptureLog, &capture);
+    dualboy_melonds_platform::Log(melonDS::Platform::Debug,
+                                 "high-volume engine diagnostic");
+    CHECK(capture.count == 0U);
+
+    dualboy_melonds_platform::Log(melonDS::Platform::Info,
+                                 "operator-relevant engine message");
+    CHECK(capture.count == 1U);
+    CHECK(capture.level == DUALBOY_LOG_INFO);
+    CHECK(capture.message == "operator-relevant engine message");
+
+    dualboy_melonds_platform::Log(melonDS::Platform::Warn,
+                                 "operator warning");
+    CHECK(capture.count == 2U);
+    CHECK(capture.level == DUALBOY_LOG_WARN);
+    dualboy_melonds_platform::Log(melonDS::Platform::Error,
+                                 "operator error");
+    CHECK(capture.count == 3U);
+    CHECK(capture.level == DUALBOY_LOG_ERROR);
+    return true;
+}
 
 bool LoadPair(PairOwner &owner,
               const std::array<std::uint8_t, kRomSize> &first,
@@ -648,7 +706,8 @@ int main()
         dualboy_detect_content(first.data(), first.size());
     const dualboy_detection second_detection =
         dualboy_detect_content(second.data(), second.size());
-    if (first_detection.platform != DUALBOY_PLATFORM_NDS ||
+    if (!TestMelonDSDebugLogsAreSuppressed() ||
+        first_detection.platform != DUALBOY_PLATFORM_NDS ||
         second_detection.platform != DUALBOY_PLATFORM_NDS ||
         !TestInstancesFramesInputAndTransport(first, second) ||
         !TestPartialAndRepeatedCleanup(first) ||

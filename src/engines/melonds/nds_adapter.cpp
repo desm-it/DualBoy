@@ -1026,6 +1026,14 @@ std::string SystemDirectory()
 
 void Log(melonDS::Platform::LogLevel level, const char *message)
 {
+    /* melonDS debug diagnostics include hot-path unknown-I/O reports that can
+     * generate millions of lines per second for retail software. Forwarding
+     * those through RetroArch/Steam can block both emulation workers long
+     * enough to trip the pair's frame deadline. The Libretro log callback has
+     * no per-message indication that verbose logging is enabled, so keep
+     * operator-relevant info/warn/error messages and suppress engine debug. */
+    if (level == melonDS::Platform::Debug) return;
+
     dualboy_log_fn callback = nullptr;
     void *context = nullptr;
     {
