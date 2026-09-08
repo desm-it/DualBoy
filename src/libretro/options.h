@@ -15,6 +15,8 @@
 extern "C" {
 #endif
 
+#define DUALBOY_CONTROLLER_PORT_COUNT 5U
+
 struct dualboy_options {
     enum dualboy_display_mode mode;
     enum dualboy_layout layout;

@@ -105,6 +105,9 @@ static struct retro_core_option_v2_definition option_v2_definitions[] = {
         {
             {"port1", "Controller Port 1"},
             {"port2", "Controller Port 2"},
+            {"port3", "Controller Port 3"},
+            {"port4", "Controller Port 4"},
+            {"port5", "Controller Port 5"},
             {NULL, NULL},
         },
         "port1",
@@ -119,6 +122,9 @@ static struct retro_core_option_v2_definition option_v2_definitions[] = {
         {
             {"port1", "Controller Port 1"},
             {"port2", "Controller Port 2"},
+            {"port3", "Controller Port 3"},
+            {"port4", "Controller Port 4"},
+            {"port5", "Controller Port 5"},
             {NULL, NULL},
         },
         "port2",
@@ -212,6 +218,9 @@ static struct retro_core_option_definition option_v1_definitions[] = {
         {
             {"port1", "Controller Port 1"},
             {"port2", "Controller Port 2"},
+            {"port3", "Controller Port 3"},
+            {"port4", "Controller Port 4"},
+            {"port5", "Controller Port 5"},
             {NULL, NULL},
         },
         "port1",
@@ -223,6 +232,9 @@ static struct retro_core_option_definition option_v1_definitions[] = {
         {
             {"port1", "Controller Port 1"},
             {"port2", "Controller Port 2"},
+            {"port3", "Controller Port 3"},
+            {"port4", "Controller Port 4"},
+            {"port5", "Controller Port 5"},
             {NULL, NULL},
         },
         "port2",
@@ -260,9 +272,9 @@ static struct retro_variable option_legacy_definitions[] = {
      "Nintendo DS Renderer; software|opengl"},
     {DUALBOY_OPTION_LINK, "Local Link; enabled|disabled"},
     {DUALBOY_OPTION_PLAYER1_CONTROLLER,
-     "Player 1 Controller; port1|port2"},
+     "Player 1 Controller; port1|port2|port3|port4|port5"},
     {DUALBOY_OPTION_PLAYER2_CONTROLLER,
-     "Player 2 Controller; port2|port1"},
+     "Player 2 Controller; port2|port1|port3|port4|port5"},
     {DUALBOY_OPTION_SWAP_SCREENS, "Swap Screens; disabled|enabled"},
     {DUALBOY_OPTION_AUDIO, "Audio Source; player1|disabled"},
     {NULL, NULL},
@@ -400,15 +412,21 @@ static void read_controller_port(retro_environment_t environment,
                                  const char *key,
                                  unsigned *port)
 {
+    static const char *const values[DUALBOY_CONTROLLER_PORT_COUNT] = {
+        "port1", "port2", "port3", "port4", "port5",
+    };
     const char *value = option_value(environment, key);
+    unsigned candidate;
 
     if (value == NULL || port == NULL) {
         return;
     }
-    if (strcmp(value, "port1") == 0) {
-        *port = 0U;
-    } else if (strcmp(value, "port2") == 0) {
-        *port = 1U;
+    for (candidate = 0U; candidate < DUALBOY_CONTROLLER_PORT_COUNT;
+         ++candidate) {
+        if (strcmp(value, values[candidate]) == 0) {
+            *port = candidate;
+            return;
+        }
     }
 }
 

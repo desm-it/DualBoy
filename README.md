@@ -9,7 +9,8 @@ wireless. DualBoy does not load another Libretro core.
 
 The MVP supports one cartridge duplicated into both machines, the two-content
 `dualboylink` subsystem, and local two-entry M3U playlists. It provides paired
-video, two RetroPad ports, one-machine audio, and independent battery saves.
+video, five selectable RetroPad source ports for two emulated players,
+one-machine audio, and independent battery saves.
 GB/GBC/GBA also provide one transactional save-state containing both machines
 and their link state. NDS manual states, rewind, and runahead are unavailable
 because upstream `LocalMP` queues cannot be restored transactionally.
@@ -141,9 +142,13 @@ save names.
 
 By default, RetroArch Controller Port 1 controls machine 0 / Player 1 and Port 2
 controls machine 1 / Player 2. The two **Player Controller** core options can
-select either port for either player while content is running, and may assign
-one port to both players intentionally. DualBoy selects only between Libretro
-ports; connect and order physical Bluetooth controllers in RetroArch or Steam.
+select any Controller Port from 1 through 5 for either player while content is
+running, and may assign one port to both players intentionally. DualBoy selects
+only between Libretro ports; connect and order physical Bluetooth controllers
+in RetroArch or Steam. On Steam Deck, the built-in controls commonly occupy Port
+1 and two Bluetooth pads often appear as Ports 2 and 3, but verify the actual
+order in the frontend. RetroArch's **Maximum Users** must be at least as high as
+the highest port selected in DualBoy.
 **Swap Screens** exchanges the two screen positions without changing either
 controller selection. In a player-only display mode, the selected player's
 machine remains selected; there is no second visible screen to exchange.
@@ -182,14 +187,16 @@ configuration fragment and the exact Steam Deck steps are in
 | `dualboy_layout` | `side_by_side`, `top_bottom` | `side_by_side` | Arrange the two native-resolution frames. |
 | `dualboy_nds_renderer` | `software`, `opengl` | `software` | Select the NDS renderer live. OpenGL requires Linux, `libEGL.so.1`, explicit surfaceless EGL, and an OpenGL 3.2 driver. |
 | `dualboy_link` | `enabled`, `disabled` | `enabled` | Attach or detach the emulated cable or NDS local-wireless transport. Changing this for GBA resets both machines; NDS changes dynamically without a reload. |
-| `dualboy_player1_controller` | `port1`, `port2` | `port1` | Select the RetroArch controller port that operates Player 1. |
-| `dualboy_player2_controller` | `port1`, `port2` | `port2` | Select the RetroArch controller port that operates Player 2. |
+| `dualboy_player1_controller` | `port1`, `port2`, `port3`, `port4`, `port5` | `port1` | Select the RetroArch controller port that operates Player 1. |
+| `dualboy_player2_controller` | `port1`, `port2`, `port3`, `port4`, `port5` | `port2` | Select the RetroArch controller port that operates Player 2. |
 | `dualboy_swap_players` | `disabled`, `enabled` | `disabled` | Exchange the two screen positions without changing either controller selection. The legacy key is retained for existing overrides; Player-only modes are unaffected. |
 | `dualboy_audio_source` | `player1`, `disabled` | `player1` | Emit Player 1 audio or suppress output while preserving timing. |
 
 Options are exposed through Libretro core-options v2, v1, and the legacy variable
 API and are read while content is running. Both player-controller options may
-name the same port; physical device-to-port assignment remains a frontend task.
+name the same port. Physical device-to-port assignment and controller order
+remain frontend tasks; ports beyond RetroArch's configured **Maximum Users** do
+not provide input.
 
 For NDS, **OpenGL** and **Local Link** are mutually exclusive. Selecting OpenGL
 turns Local Link off immediately; selecting Local Link first restores Software

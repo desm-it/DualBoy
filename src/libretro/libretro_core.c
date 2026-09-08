@@ -55,7 +55,7 @@ struct dualboy_libretro_context {
     struct dualboy_options options;
     struct dualboy_geometry last_geometry;
     struct dualboy_touch_cursor touch_cursors[DUALBOY_MACHINE_COUNT];
-    unsigned port_devices[DUALBOY_MACHINE_COUNT];
+    unsigned port_devices[DUALBOY_CONTROLLER_PORT_COUNT];
     char system_directory[DUALBOY_PATH_CAPACITY];
     char save_directory[DUALBOY_PATH_CAPACITY];
     int16_t audio_buffer[DUALBOY_AUDIO_BUFFER_FRAMES * 2U];
@@ -142,6 +142,9 @@ static struct retro_controller_description retropad_types[] = {
 static struct retro_controller_info controller_info[] = {
     {retropad_types, 2U},
     {retropad_types, 2U},
+    {retropad_types, 2U},
+    {retropad_types, 2U},
+    {retropad_types, 2U},
     {NULL, 0U},
 };
 
@@ -150,47 +153,51 @@ static struct retro_controller_info controller_info[] = {
 #define ANALOG_DESC(port_, id_, text_)                                         \
     {(port_), RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT, (id_),     \
      (text_)}
+#define PORT_DESCRIPTORS(port_, number_)                                       \
+    INPUT_DESC((port_), RETRO_DEVICE_ID_JOYPAD_UP,                             \
+               "Controller Port " #number_ " Up"),                           \
+    INPUT_DESC((port_), RETRO_DEVICE_ID_JOYPAD_DOWN,                           \
+               "Controller Port " #number_ " Down"),                         \
+    INPUT_DESC((port_), RETRO_DEVICE_ID_JOYPAD_LEFT,                           \
+               "Controller Port " #number_ " Left"),                         \
+    INPUT_DESC((port_), RETRO_DEVICE_ID_JOYPAD_RIGHT,                          \
+               "Controller Port " #number_ " Right"),                        \
+    INPUT_DESC((port_), RETRO_DEVICE_ID_JOYPAD_A,                              \
+               "Controller Port " #number_ " A"),                            \
+    INPUT_DESC((port_), RETRO_DEVICE_ID_JOYPAD_B,                              \
+               "Controller Port " #number_ " B"),                            \
+    INPUT_DESC((port_), RETRO_DEVICE_ID_JOYPAD_X,                              \
+               "Controller Port " #number_ " X"),                            \
+    INPUT_DESC((port_), RETRO_DEVICE_ID_JOYPAD_Y,                              \
+               "Controller Port " #number_ " Y"),                            \
+    INPUT_DESC((port_), RETRO_DEVICE_ID_JOYPAD_L,                              \
+               "Controller Port " #number_ " L"),                            \
+    INPUT_DESC((port_), RETRO_DEVICE_ID_JOYPAD_R,                              \
+               "Controller Port " #number_ " R"),                            \
+    INPUT_DESC((port_), RETRO_DEVICE_ID_JOYPAD_SELECT,                         \
+               "Controller Port " #number_ " Select"),                       \
+    INPUT_DESC((port_), RETRO_DEVICE_ID_JOYPAD_START,                          \
+               "Controller Port " #number_ " Start"),                        \
+    INPUT_DESC((port_), RETRO_DEVICE_ID_JOYPAD_R2,                             \
+               "Controller Port " #number_                                    \
+               " Touch Press (Visible Cursor)"),                              \
+    INPUT_DESC((port_), RETRO_DEVICE_ID_JOYPAD_R3,                             \
+               "Controller Port " #number_ " Touch Press"),                  \
+    ANALOG_DESC((port_), RETRO_DEVICE_ID_ANALOG_X,                             \
+                "Controller Port " #number_ " Touch X"),                     \
+    ANALOG_DESC((port_), RETRO_DEVICE_ID_ANALOG_Y,                             \
+                "Controller Port " #number_ " Touch Y")
 
 static struct retro_input_descriptor input_descriptors[] = {
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_UP, "Controller Port 1 Up"),
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_DOWN, "Controller Port 1 Down"),
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_LEFT, "Controller Port 1 Left"),
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_RIGHT, "Controller Port 1 Right"),
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_A, "Controller Port 1 A"),
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_B, "Controller Port 1 B"),
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_X, "Controller Port 1 X"),
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_Y, "Controller Port 1 Y"),
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_L, "Controller Port 1 L"),
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_R, "Controller Port 1 R"),
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_SELECT, "Controller Port 1 Select"),
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_START, "Controller Port 1 Start"),
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_R2,
-               "Controller Port 1 Touch Press (Visible Cursor)"),
-    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_R3,
-               "Controller Port 1 Touch Press"),
-    ANALOG_DESC(0U, RETRO_DEVICE_ID_ANALOG_X, "Controller Port 1 Touch X"),
-    ANALOG_DESC(0U, RETRO_DEVICE_ID_ANALOG_Y, "Controller Port 1 Touch Y"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_UP, "Controller Port 2 Up"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_DOWN, "Controller Port 2 Down"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_LEFT, "Controller Port 2 Left"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_RIGHT, "Controller Port 2 Right"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_A, "Controller Port 2 A"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_B, "Controller Port 2 B"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_X, "Controller Port 2 X"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_Y, "Controller Port 2 Y"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_L, "Controller Port 2 L"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_R, "Controller Port 2 R"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_SELECT, "Controller Port 2 Select"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_START, "Controller Port 2 Start"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_R2,
-               "Controller Port 2 Touch Press (Visible Cursor)"),
-    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_R3,
-               "Controller Port 2 Touch Press"),
-    ANALOG_DESC(1U, RETRO_DEVICE_ID_ANALOG_X, "Controller Port 2 Touch X"),
-    ANALOG_DESC(1U, RETRO_DEVICE_ID_ANALOG_Y, "Controller Port 2 Touch Y"),
+    PORT_DESCRIPTORS(0U, 1),
+    PORT_DESCRIPTORS(1U, 2),
+    PORT_DESCRIPTORS(2U, 3),
+    PORT_DESCRIPTORS(3U, 4),
+    PORT_DESCRIPTORS(4U, 5),
     {0U, 0U, 0U, 0U, NULL},
 };
 
+#undef PORT_DESCRIPTORS
 #undef INPUT_DESC
 #undef ANALOG_DESC
 
@@ -444,6 +451,15 @@ static void read_initial_options(void)
     core.link_failure_logged = false;
 }
 
+static void initialize_port_devices(void)
+{
+    unsigned port;
+
+    for (port = 0U; port < DUALBOY_CONTROLLER_PORT_COUNT; ++port) {
+        core.port_devices[port] = RETRO_DEVICE_JOYPAD;
+    }
+}
+
 static void ensure_initialized(void)
 {
     if (core.initialized) {
@@ -451,8 +467,7 @@ static void ensure_initialized(void)
     }
     dualboy_session_init(&core.session);
     dualboy_options_set_defaults(&core.options);
-    core.port_devices[0] = RETRO_DEVICE_JOYPAD;
-    core.port_devices[1] = RETRO_DEVICE_JOYPAD;
+    initialize_port_devices();
     refresh_frontend_services();
     read_initial_options();
     core.initialized = true;
@@ -912,7 +927,7 @@ cleanup:
 
 static bool port_has_controller(unsigned port)
 {
-    const unsigned device = port < DUALBOY_MACHINE_COUNT
+    const unsigned device = port < DUALBOY_CONTROLLER_PORT_COUNT
                                 ? core.port_devices[port] & RETRO_DEVICE_MASK
                                 : RETRO_DEVICE_NONE;
 
@@ -1575,8 +1590,7 @@ void retro_init(void)
     core.audio_batch = audio_batch;
     core.input_poll = input_poll;
     core.input_state = input_state;
-    core.port_devices[0] = RETRO_DEVICE_JOYPAD;
-    core.port_devices[1] = RETRO_DEVICE_JOYPAD;
+    initialize_port_devices();
     dualboy_session_init(&core.session);
     dualboy_options_set_defaults(&core.options);
     refresh_frontend_services();
@@ -1651,7 +1665,7 @@ void retro_set_controller_port_device(unsigned port, unsigned device)
 {
     const unsigned base_device = device & RETRO_DEVICE_MASK;
 
-    if (port >= DUALBOY_MACHINE_COUNT) {
+    if (port >= DUALBOY_CONTROLLER_PORT_COUNT) {
         return;
     }
     if (base_device == RETRO_DEVICE_JOYPAD ||

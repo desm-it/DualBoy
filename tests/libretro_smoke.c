@@ -40,6 +40,7 @@ void *dualboy_libretro_debug_engine_pair(void);
 #define TEST_SLOT1_RTC_ID 0x101U
 #define TEST_SLOT2_SRAM_ID 0x200U
 #define TEST_SLOT2_RTC_ID 0x201U
+#define TEST_CONTROLLER_PORT_COUNT 5U
 #define TEST_POINTER_CONTACT_LIMIT 16U
 #define TEST_PLAYER1_CURSOR_COLOR UINT32_C(0x0000dfff)
 
@@ -129,8 +130,8 @@ struct frontend_fixture {
     const char *player2_controller;
     const char *swap;
     const char *audio_source;
-    uint16_t input_masks[2];
-    int16_t right_analog[2][2];
+    uint16_t input_masks[TEST_CONTROLLER_PORT_COUNT];
+    int16_t right_analog[TEST_CONTROLLER_PORT_COUNT][2];
     struct pointer_contact pointer_contacts[TEST_POINTER_CONTACT_LIMIT];
     struct retro_game_geometry geometry;
     unsigned subsystem_calls;
@@ -155,8 +156,8 @@ struct frontend_fixture {
     unsigned audio_batch_calls;
     size_t audio_frames;
     unsigned input_poll_calls;
-    unsigned input_state_calls[2];
-    unsigned analog_input_calls[2];
+    unsigned input_state_calls[TEST_CONTROLLER_PORT_COUNT];
+    unsigned analog_input_calls[TEST_CONTROLLER_PORT_COUNT];
     unsigned pointer_input_calls;
     unsigned perf_interface_calls;
     unsigned fastforward_override_calls;
@@ -593,12 +594,14 @@ static int16_t RETRO_CALLCONV input_state_callback(unsigned port,
                                                    unsigned index,
                                                    unsigned id)
 {
-    if (port < 2U && device == RETRO_DEVICE_JOYPAD && index == 0U &&
+    if (port < TEST_CONTROLLER_PORT_COUNT &&
+        device == RETRO_DEVICE_JOYPAD && index == 0U &&
         id == RETRO_DEVICE_ID_JOYPAD_MASK) {
         ++frontend.input_state_calls[port];
         return (int16_t)frontend.input_masks[port];
     }
-    if (port < 2U && device == RETRO_DEVICE_ANALOG &&
+    if (port < TEST_CONTROLLER_PORT_COUNT &&
+        device == RETRO_DEVICE_ANALOG &&
         index == RETRO_DEVICE_INDEX_ANALOG_RIGHT &&
         (id == RETRO_DEVICE_ID_ANALOG_X ||
          id == RETRO_DEVICE_ID_ANALOG_Y)) {
@@ -639,10 +642,9 @@ static void reset_observations(void)
     frontend.audio_batch_calls = 0U;
     frontend.audio_frames = 0U;
     frontend.input_poll_calls = 0U;
-    frontend.input_state_calls[0] = 0U;
-    frontend.input_state_calls[1] = 0U;
-    frontend.analog_input_calls[0] = 0U;
-    frontend.analog_input_calls[1] = 0U;
+    memset(frontend.input_state_calls, 0, sizeof(frontend.input_state_calls));
+    memset(frontend.analog_input_calls, 0,
+           sizeof(frontend.analog_input_calls));
     frontend.pointer_input_calls = 0U;
     frontend.video_probe_enabled = false;
     frontend.video_probe_valid = false;
@@ -940,14 +942,25 @@ static bool validate_registration(const struct core_api *api)
         "disabled",
         "player1",
     };
+    static const char *const controller_option_values[] = {
+        "port1", "port2", "port3", "port4", "port5",
+    };
+    static const char *const controller_option_labels[] = {
+        "Controller Port 1", "Controller Port 2", "Controller Port 3",
+        "Controller Port 4", "Controller Port 5",
+    };
+    static const char *const descriptor_prefixes[] = {
+        "Controller Port 1 ", "Controller Port 2 ", "Controller Port 3 ",
+        "Controller Port 4 ", "Controller Port 5 ",
+    };
     struct retro_system_info info;
     struct retro_system_av_info av;
     const struct retro_subsystem_info *subsystem;
     size_t index;
     size_t descriptor_count = 0U;
     size_t category_count = 0U;
-    bool port1_r2_described = false;
-    bool port2_r2_described = false;
+    size_t descriptors_per_port[TEST_CONTROLLER_PORT_COUNT] = {0U};
+    bool r2_described[TEST_CONTROLLER_PORT_COUNT] = {false};
 
     REQUIRE(api->api_version() == RETRO_API_VERSION);
     memset(&info, 0, sizeof(info));
@@ -1007,36 +1020,37 @@ static bool validate_registration(const struct core_api *api)
     REQUIRE(frontend.content_overrides[1].extensions == NULL);
 
     REQUIRE(frontend.controllers != NULL);
-    REQUIRE(frontend.controllers[0].num_types == 2U);
-    REQUIRE(frontend.controllers[1].num_types == 2U);
-    REQUIRE(frontend.controllers[0].types[0].id == RETRO_DEVICE_JOYPAD);
-    REQUIRE(frontend.controllers[1].types[0].id == RETRO_DEVICE_JOYPAD);
-    REQUIRE(frontend.controllers[0].types[1].id == RETRO_DEVICE_ANALOG);
-    REQUIRE(frontend.controllers[1].types[1].id == RETRO_DEVICE_ANALOG);
-    REQUIRE(frontend.controllers[2].types == NULL);
+    for (index = 0U; index < TEST_CONTROLLER_PORT_COUNT; ++index) {
+        REQUIRE(frontend.controllers[index].num_types == 2U);
+        REQUIRE(frontend.controllers[index].types[0].id ==
+                RETRO_DEVICE_JOYPAD);
+        REQUIRE(frontend.controllers[index].types[1].id ==
+                RETRO_DEVICE_ANALOG);
+    }
+    REQUIRE(frontend.controllers[TEST_CONTROLLER_PORT_COUNT].types == NULL);
     REQUIRE(frontend.input_descriptors != NULL);
-    while (descriptor_count < 64U &&
+    while (descriptor_count < 128U &&
            frontend.input_descriptors[descriptor_count].description != NULL) {
         const struct retro_input_descriptor *descriptor =
             &frontend.input_descriptors[descriptor_count];
+        const unsigned port = descriptor->port;
 
+        REQUIRE(port < TEST_CONTROLLER_PORT_COUNT);
+        ++descriptors_per_port[port];
         if (descriptor->device == RETRO_DEVICE_JOYPAD &&
             descriptor->id == RETRO_DEVICE_ID_JOYPAD_R2) {
-            if (descriptor->port == 0U) {
-                port1_r2_described = true;
-            } else if (descriptor->port == 1U) {
-                port2_r2_described = true;
-            }
+            r2_described[port] = true;
         }
-        REQUIRE(descriptor->port < 2U);
         REQUIRE(strncmp(descriptor->description,
-                        descriptor->port == 0U ? "Controller Port 1 "
-                                               : "Controller Port 2 ",
-                        strlen("Controller Port 1 ")) == 0);
+                        descriptor_prefixes[port],
+                        strlen(descriptor_prefixes[port])) == 0);
         ++descriptor_count;
     }
-    REQUIRE(descriptor_count == 32U);
-    REQUIRE(port1_r2_described && port2_r2_described);
+    REQUIRE(descriptor_count == 80U);
+    for (index = 0U; index < TEST_CONTROLLER_PORT_COUNT; ++index) {
+        REQUIRE(descriptors_per_port[index] == 16U);
+        REQUIRE(r2_described[index]);
+    }
 
     REQUIRE(frontend.options_v2 != NULL);
     REQUIRE(frontend.options_v2->categories != NULL);
@@ -1057,6 +1071,21 @@ static bool validate_registration(const struct core_api *api)
         REQUIRE(definition->values[0].value != NULL);
     }
     REQUIRE(frontend.options_v2->definitions[8].key == NULL);
+    for (index = 4U; index <= 5U; ++index) {
+        const struct retro_core_option_v2_definition *definition =
+            &frontend.options_v2->definitions[index];
+        unsigned port;
+
+        for (port = 0U; port < TEST_CONTROLLER_PORT_COUNT; ++port) {
+            REQUIRE(definition->values[port].value != NULL);
+            REQUIRE(definition->values[port].label != NULL);
+            REQUIRE(strcmp(definition->values[port].value,
+                           controller_option_values[port]) == 0);
+            REQUIRE(strcmp(definition->values[port].label,
+                           controller_option_labels[port]) == 0);
+        }
+        REQUIRE(definition->values[TEST_CONTROLLER_PORT_COUNT].value == NULL);
+    }
     REQUIRE(strcmp(frontend.options_v2->definitions[3].desc, "Local Link") ==
             0);
     REQUIRE(strstr(frontend.options_v2->definitions[3].info,
@@ -1446,6 +1475,7 @@ static bool test_nds_load_paths(struct core_api *api,
     int playlist_length;
     unsigned geometry_calls;
     unsigned hw_render_calls;
+    unsigned port1_input_calls;
     unsigned set_variable_calls;
 
     set_default_options();
@@ -1464,17 +1494,28 @@ static bool test_nds_load_paths(struct core_api *api,
     REQUIRE(api->get_memory_data(TEST_SLOT1_SRAM_ID) == NULL);
     REQUIRE(api->get_memory_data(TEST_SLOT2_SRAM_ID) == NULL);
 
+    /* Model the common Deck layout: built-in controls on Port 1 and two
+     * Bluetooth controllers on Ports 2 and 3. */
+    frontend.player1_controller = "port2";
+    frontend.player2_controller = "port3";
+    frontend.option_updated = true;
+
     /* R2 is a touch press only after right-stick movement has made the cursor
      * visible. It must not reveal a neutral, previously hidden cursor. */
     frontend.time_usec = INT64_C(500000);
+    /* Port 1 is deliberately pressed but unselected. */
     frontend.input_masks[0] =
         (uint16_t)(UINT16_C(1) << RETRO_DEVICE_ID_JOYPAD_R2);
     frontend.input_masks[1] =
         (uint16_t)(UINT16_C(1) << RETRO_DEVICE_ID_JOYPAD_R2);
+    frontend.input_masks[2] =
+        (uint16_t)(UINT16_C(1) << RETRO_DEVICE_ID_JOYPAD_R2);
     frontend.video_probe_x = 128U;
     frontend.video_probe_y = 192U + 96U;
     frontend.video_probe_enabled = true;
+    port1_input_calls = frontend.input_state_calls[0];
     api->run();
+    REQUIRE(frontend.input_state_calls[0] == port1_input_calls);
     REQUIRE(frontend.video_probe_valid);
     REQUIRE(frontend.video_probe_pixel != TEST_PLAYER1_CURSOR_COLOR);
     frontend.video_probe_enabled = false;
@@ -1496,17 +1537,23 @@ static bool test_nds_load_paths(struct core_api *api,
 #endif
     frontend.input_masks[0] = 0U;
     frontend.input_masks[1] = 0U;
+    frontend.input_masks[2] = 0U;
 
     /* Right-stick movement reveals each aiming cursor without pressing either
      * touchscreen. The targets differ so per-port R2 routing is observable. */
     frontend.time_usec = INT64_C(1000000);
+    /* Preserve the default Port 1 aim used by the later R3 regression. */
     frontend.right_analog[0][RETRO_DEVICE_ID_ANALOG_X] =
         pointer_coordinate(64U, 256U);
     frontend.right_analog[0][RETRO_DEVICE_ID_ANALOG_Y] =
         pointer_coordinate(48U, 192U);
     frontend.right_analog[1][RETRO_DEVICE_ID_ANALOG_X] =
-        pointer_coordinate(192U, 256U);
+        pointer_coordinate(64U, 256U);
     frontend.right_analog[1][RETRO_DEVICE_ID_ANALOG_Y] =
+        pointer_coordinate(48U, 192U);
+    frontend.right_analog[2][RETRO_DEVICE_ID_ANALOG_X] =
+        pointer_coordinate(192U, 256U);
+    frontend.right_analog[2][RETRO_DEVICE_ID_ANALOG_Y] =
         pointer_coordinate(144U, 192U);
     frontend.video_probe_x = 64U;
     frontend.video_probe_y = 192U + 48U;
@@ -1514,7 +1561,8 @@ static bool test_nds_load_paths(struct core_api *api,
     api->run();
     REQUIRE(frontend.video_probe_valid);
     REQUIRE(frontend.video_probe_pixel == TEST_PLAYER1_CURSOR_COLOR);
-    REQUIRE(frontend.analog_input_calls[0] >= 2U);
+    REQUIRE(frontend.analog_input_calls[1] >= 2U);
+    REQUIRE(frontend.analog_input_calls[2] >= 2U);
 #if defined(DUALBOY_INTERNAL_TEST)
     {
         void *pair_handle = dualboy_libretro_debug_engine_pair();
@@ -1534,9 +1582,9 @@ static bool test_nds_load_paths(struct core_api *api,
 
     /* Once the cursors are visible, each port's R2 presses its own coordinates
      * without changing R3's existing click-to-reveal behavior. */
-    frontend.input_masks[0] =
-        (uint16_t)(UINT16_C(1) << RETRO_DEVICE_ID_JOYPAD_R2);
     frontend.input_masks[1] =
+        (uint16_t)(UINT16_C(1) << RETRO_DEVICE_ID_JOYPAD_R2);
+    frontend.input_masks[2] =
         (uint16_t)(UINT16_C(1) << RETRO_DEVICE_ID_JOYPAD_R2);
     frontend.time_usec = INT64_C(1000001);
     api->run();
@@ -1560,16 +1608,16 @@ static bool test_nds_load_paths(struct core_api *api,
         REQUIRE(x == 192U && y == 144U);
     }
 #endif
-    frontend.input_masks[0] = 0U;
     frontend.input_masks[1] = 0U;
-    frontend.right_analog[1][RETRO_DEVICE_ID_ANALOG_X] = 0;
-    frontend.right_analog[1][RETRO_DEVICE_ID_ANALOG_Y] = 0;
+    frontend.input_masks[2] = 0U;
+    frontend.right_analog[2][RETRO_DEVICE_ID_ANALOG_X] = 0;
+    frontend.right_analog[2][RETRO_DEVICE_ID_ANALOG_Y] = 0;
 
     /* Changing Player 1's source port invalidates that machine's cursor. A
      * held R2 on the newly selected, neutral port must not reuse the old
      * port's visible aim point or authorize a touch. */
-    frontend.player1_controller = "port2";
-    frontend.input_masks[1] =
+    frontend.player1_controller = "port4";
+    frontend.input_masks[3] =
         (uint16_t)(UINT16_C(1) << RETRO_DEVICE_ID_JOYPAD_R2);
     frontend.option_updated = true;
     frontend.time_usec = INT64_C(1000002);
@@ -1589,8 +1637,8 @@ static bool test_nds_load_paths(struct core_api *api,
         REQUIRE(!active);
     }
 #endif
-    frontend.player1_controller = "port1";
-    frontend.input_masks[1] = 0U;
+    frontend.player1_controller = "port2";
+    frontend.input_masks[3] = 0U;
     frontend.option_updated = true;
 
     /* Two simultaneous contacts occupy the two displayed bottom screens.
@@ -1646,9 +1694,9 @@ static bool test_nds_load_paths(struct core_api *api,
 #endif
 
     /* Pointer contacts follow the machines currently drawn under them, not
-     * either player's selected controller port. Swap both the presentation
-     * and controller assignments and verify the same screen coordinates now
-     * reach the opposite displayed machines. */
+     * either player's selected controller port. Swap the presentation and
+     * independently change a controller assignment; the same screen
+     * coordinates must now reach the opposite displayed machines. */
     frontend.swap = "enabled";
     frontend.player1_controller = "port2";
     frontend.player2_controller = "port1";
@@ -2090,6 +2138,13 @@ static bool test_two_rom_subsystem(struct core_api *api,
         (uint16_t)(1U << RETRO_DEVICE_ID_JOYPAD_RIGHT);
     frontend.input_masks[1] =
         (uint16_t)(1U << RETRO_DEVICE_ID_JOYPAD_LEFT);
+    frontend.input_masks[2] =
+        (uint16_t)(1U << RETRO_DEVICE_ID_JOYPAD_UP);
+    frontend.input_masks[3] =
+        (uint16_t)(1U << RETRO_DEVICE_ID_JOYPAD_DOWN);
+    frontend.input_masks[4] =
+        (uint16_t)((1U << RETRO_DEVICE_ID_JOYPAD_RIGHT) |
+                   (1U << RETRO_DEVICE_ID_JOYPAD_UP));
     REQUIRE(run_until_subsystem_program(api, first_sram, second_sram,
                                         0x51U, 0x62U, 0x0EU, 0x0DU));
     api->run();
@@ -2108,26 +2163,43 @@ static bool test_two_rom_subsystem(struct core_api *api,
     REQUIRE(frontend.second_screen_hash == first_hash);
 
     /* Controller assignment is live and independent of presentation order.
-     * With the screens still swapped, exchange the two source ports and then
-     * intentionally assign Controller Port 2 to both machines. */
+     * Model the Deck on Controller Port 1 and two Bluetooth controllers on
+     * Ports 2 and 3. The Deck's conflicting input must not leak through. */
     frontend.player1_controller = "port2";
-    frontend.player2_controller = "port1";
+    frontend.player2_controller = "port3";
     frontend.option_updated = true;
     REQUIRE(run_until_subsystem_program(api, first_sram, second_sram,
-                                        0x51U, 0x62U, 0x0DU, 0x0EU));
+                                        0x51U, 0x62U, 0x0DU, 0x0BU));
     REQUIRE(frontend.first_screen_hash == second_hash);
     REQUIRE(frontend.second_screen_hash == first_hash);
 
-    frontend.player2_controller = "port2";
+    /* The upper selectable ports route independently too. */
+    frontend.player1_controller = "port4";
+    frontend.player2_controller = "port5";
     frontend.option_updated = true;
     REQUIRE(run_until_subsystem_program(api, first_sram, second_sram,
-                                        0x51U, 0x62U, 0x0DU, 0x0DU));
+                                        0x51U, 0x62U, 0x07U, 0x0AU));
+
+    /* Duplicate high-port assignment is intentional and supported. */
+    frontend.player1_controller = "port5";
+    frontend.option_updated = true;
+    REQUIRE(run_until_subsystem_program(api, first_sram, second_sram,
+                                        0x51U, 0x62U, 0x0AU, 0x0AU));
+
+    /* An unrecognised persisted value retains the last valid selection. */
+    frontend.player1_controller = "port6";
+    frontend.option_updated = true;
+    REQUIRE(run_until_subsystem_program(api, first_sram, second_sram,
+                                        0x51U, 0x62U, 0x0AU, 0x0AU));
 
     frontend.player1_controller = "port1";
     frontend.player2_controller = "port2";
     frontend.option_updated = true;
     REQUIRE(run_until_subsystem_program(api, first_sram, second_sram,
                                         0x51U, 0x62U, 0x0EU, 0x0DU));
+    frontend.input_masks[2] = 0U;
+    frontend.input_masks[3] = 0U;
+    frontend.input_masks[4] = 0U;
 
     frontend.layout = "top_bottom";
     frontend.option_updated = true;
@@ -2285,6 +2357,10 @@ int main(int argc, char **argv)
     api.set_controller_port_device(0U, RETRO_DEVICE_JOYPAD);
     api.set_controller_port_device(1U, RETRO_DEVICE_JOYPAD);
     api.set_controller_port_device(2U, RETRO_DEVICE_ANALOG);
+    api.set_controller_port_device(3U, RETRO_DEVICE_JOYPAD);
+    api.set_controller_port_device(4U, RETRO_DEVICE_ANALOG);
+    /* Port index 5 is outside the supported 0..4 range and must be ignored. */
+    api.set_controller_port_device(5U, RETRO_DEVICE_ANALOG);
     if (!test_normal_load(&api, normal_rom) ||
         !test_pathless_normal_load(&api, normal_rom) ||
         !test_cgb_load(&api, color_rom) ||

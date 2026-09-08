@@ -136,14 +136,16 @@ be two separate lines inside the file.
 
 ## Controllers and display
 
-Connect and order two controllers in Steam's controller settings, then confirm
-their Port 1/Port 2 assignments in RetroArch. The Deck's built-in controls can
-occupy one port; the other player needs another controller or a deliberately
-configured second input device. DualBoy cannot identify Bluetooth devices by
-name or change that physical order. Its live **Player 1 Controller** and
-**Player 2 Controller** options only choose which of RetroArch's two ports feeds
-each emulated machine. Defaults are Port 1 and Port 2 respectively; selecting the
-same port for both is supported when one controller should drive both machines.
+Connect and order the controllers in Steam's controller settings, then confirm
+their logical port assignments in RetroArch. The Deck's built-in controls
+commonly occupy Port 1, so the first two Bluetooth pads often appear as Ports 2
+and 3, but this ordering is not guaranteed and must be verified in the frontend.
+Set RetroArch's **Maximum Users** to at least the highest port that DualBoy will
+select. DualBoy cannot identify Bluetooth devices by name or change their
+physical order. Its live **Player 1 Controller** and **Player 2 Controller**
+options only choose which of RetroArch's Ports 1 through 5 feeds each emulated
+machine. Defaults are Port 1 and Port 2 respectively; selecting the same port for
+both is supported when one controller should drive both machines.
 
 Each NDS machine always shows its 256x192 top screen above its 256x192 bottom
 touch screen. RetroArch pointer contacts are accepted only inside displayed
@@ -170,6 +172,11 @@ Useful core options are:
 - **Player 2 Controller = Controller Port 2**
 - **Swap Screens = Enabled** when you want to exchange only their placement
 - **Audio Source = Player 1** or **Disabled**
+
+For a Deck with two Bluetooth controllers, use the verified logical ports rather
+than assuming connection order. For example, if RetroArch shows the Bluetooth
+pads on Ports 2 and 3, assign those two ports to Player 1 and Player 2 in either
+order.
 
 Screen swap does not change controller assignments, and has no effect in a
 player-only display mode. Changing a player-controller option takes effect live;
@@ -292,9 +299,10 @@ See [save ownership and formats](saves.md) before importing standalone mGBA
 Before trusting a long session:
 
 1. Load a source-generated or otherwise legally redistributable test cartridge.
-2. Confirm both screens advance and two controller ports affect different
-   machines. Exchange the two **Player Controller** options and verify the
-   controls move to the intended players without changing screen positions.
+2. Confirm both screens advance and two selected controller ports affect
+   different machines. Exercise at least one selection from Ports 3 through 5,
+   exchange the two **Player Controller** options, and verify the controls move
+   to the intended players without changing screen positions.
 3. Toggle **Swap Screens** and verify placement swaps while each controller
    continues operating the same machine.
 4. Create distinct in-game battery progress on both machines, cleanly unload
@@ -319,8 +327,10 @@ check.
 - **Core loads but a playlist does not:** use a real local path, exactly two
   non-comment entries, compatible engine families, and files accessible inside
   the Flatpak sandbox.
-- **Only one controller works:** check Steam controller order, RetroArch's Port
-  1/Port 2 device assignments, and DualBoy's two **Player Controller** options.
+- **Only one controller works:** check Steam controller order, every relevant
+  RetroArch port assignment, RetroArch's **Maximum Users**, and DualBoy's two
+  **Player Controller** options. The maximum-user value must be at least as high
+  as the highest selected port.
 - **Saves do not update:** check the Save Files directory, log output, directory
   writability, and whether another RetroArch process owns a
   `.dualboy.lock`.

@@ -37,17 +37,17 @@ digest-pinned `linux/amd64` container on an ARM64 Docker host:
 ```text
 make test-linux-x86_64
 100% tests passed, 0 tests failed out of 10
-Total Test time (real) = 168.26 sec
+Total Test time (real) = 165.25 sec
 frontend_unit: 0.03 seconds
 session_unit: 0.03 seconds
 state_unit: 0.03 seconds
 persistence_unit: 0.04 seconds
-save_manager_unit: 0.12 seconds
-sameboy_adapter_unit: 8.92 seconds
-mgba_adapter_unit: 4.99 seconds
-melonds_adapter_unit: 35.61 seconds
-libretro_abi_smoke: 22.07 seconds
-libretro_nds_pointer_integration: 96.01 seconds
+save_manager_unit: 0.08 seconds
+sameboy_adapter_unit: 8.52 seconds
+mgba_adapter_unit: 4.85 seconds
+melonds_adapter_unit: 34.28 seconds
+libretro_abi_smoke: 21.67 seconds
+libretro_nds_pointer_integration: 95.37 seconds
 ```
 
 The ten passing tests were `frontend_unit`, `session_unit`,
@@ -143,7 +143,8 @@ content. The passing native and x86-64 runs above exercised:
 
 - Nintendo-header detection, family compatibility, composition geometry,
   player-only layouts, presentation-only screen swap, live swapped/duplicate
-  controller-port routing, and unchanged input routing while screens swap;
+  controller-port routing across five registered source ports, and unchanged
+  input routing while screens swap;
 - shared immutable normal-load content with independent mutable sessions,
   two-slot subsystem ownership, and idempotent partial-failure cleanup;
 - paired save-state round trips, link payload restoration, battery/RTC
@@ -230,7 +231,7 @@ The current source completed the native ARM64 ASan+UBSan command:
 ```text
 make asan-linux-native
 100% tests passed, 0 tests failed out of 10
-Total Test time (real) = 171.37 sec
+Total Test time (real) = 172.00 sec
 ```
 
 CTest returned success and the log contains zero AddressSanitizer or
@@ -291,7 +292,7 @@ dist/linux-x86_64/share/libretro/info/dualboy_libretro.info
 x86-64 (`Advanced Micro Devices X86-64`), dynamically linked. The files have:
 
 ```text
-abaf5b0489f37e6b0e9864b3bfcaaabcc0687904a7a4df9eacf621c94610390b  dualboy_libretro.so
+4759d6768b2fd7ed28d59c26b0e7e0292117546ab1a64a0f1116ba065cd1ba33  dualboy_libretro.so
 f16a80e35815d46705b92f5ef45b117ec78a7395ee59535ee4b63570e21f83be  dualboy_libretro.info
 ```
 
@@ -304,9 +305,10 @@ melonDS, adapter-test, or nested Libretro entrypoint is exported. The first host
 
 Implementation plus the automated evidence above establish these components:
 
-- one exported Libretro core, XRGB8888 output, two RetroPad ports, 59.7275 Hz
-  timing for GB/GBC/GBA, 59.8260982880808 Hz for NDS, and 48 kHz stereo output
-  sourced only from machine 0;
+- one exported Libretro core, XRGB8888 output, five selectable RetroPad source
+  ports feeding two emulated players, 59.7275 Hz timing for GB/GBC/GBA,
+  59.8260982880808 Hz for NDS, and 48 kHz stereo output sourced only from
+  machine 0;
 - two-instance SameBoy for GB/GBC and two-instance mGBA with the adapted PR #318
   cooperative SIO scheduler for GBA;
 - two-instance melonDS with two concurrent software/LocalMP frame workers or a
@@ -316,9 +318,9 @@ Implementation plus the automated evidence above establish these components:
 - normal same-ROM, exactly-two-ROM `dualboylink` subsystem, and exactly-two-entry
   local M3U loading, with header-first detection and mixed-family rejection;
 - side-by-side, top/bottom, Player 1 only, Player 2 only, presentation-only
-  screen swap, live per-player selection of either RetroArch controller port,
-  mutually exclusive NDS OpenGL/local-link selection, link enable/disable, and
-  Player 1/disabled audio core options;
+  screen swap, live per-player selection of RetroArch Controller Ports 1 through
+  5, mutually exclusive NDS OpenGL/local-link selection, link enable/disable,
+  and Player 1/disabled audio core options;
 - collision-safe independent SaveRAM/RTC, hash-derived pathless identities,
   nondestructive GBA `.sav` import, atomic writes, per-region
   `.dualboy.lock` coordination, and read-only behavior under contention;
@@ -396,10 +398,13 @@ such error remains a potential desynchronization and should be investigated.
   physical Deck/input-driver combination. The public-ABI automated test reaches
   two real melonDS TSC devices, but that does not establish hardware-driver
   behavior.
-- Live controller-port selection, duplicate port assignment, and independence
-  from screen swap are covered by generated-ROM tests but have not been checked
-  in real RetroArch or with a second physical Bluetooth controller. RetroArch or
-  Steam, not the core, decides which physical device occupies each Libretro port.
+- Live controller-port selection across Ports 1 through 5, duplicate port
+  assignment, and independence from screen swap are covered by generated-ROM
+  tests but have not been checked in real RetroArch with two physical Bluetooth
+  controllers. RetroArch or Steam, not the core, decides which physical
+  device occupies each Libretro port. A Deck commonly occupies Port 1 and two
+  Bluetooth pads often appear as Ports 2 and 3, but that order remains unverified
+  here; RetroArch's **Maximum Users** must also cover the highest selected port.
 - The supplied RetroArch all-users menu-control fragment was source-audited
   against RetroArch 1.22.2 and primary commit
   `8039bc24666366ade168776ccffd303620fc26ed`; it has not yet been exercised in a

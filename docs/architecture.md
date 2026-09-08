@@ -172,14 +172,17 @@ player-only selection or controller-to-machine routing.
 
 Input is polled once per frontend frame and captured as two structured values
 containing a RetroPad mask and optional touch coordinates. Live core options
-select RetroArch port 0 or 1 independently for each machine; defaults are port 0
-for machine 0 and port 1 for machine 1, and duplicate selections are valid.
-DualBoy cannot enumerate or reorder physical controllers behind those Libretro
-ports, which remains frontend/platform state. During NDS sessions, successive
-pointer indices are inverse-mapped through the active
-compositor geometry and accepted only inside a displayed bottom screen, with one
-first-wins contact per DS, independently of controller selection. Each machine's
-selected port supplies its right analog stick plus R3 or R2 stylus fallback.
+select RetroArch ports 0 through 4 independently for each machine; defaults are
+port 0 for machine 0 and port 1 for machine 1, and duplicate selections are
+valid. DualBoy advertises five RetroPad source ports, but they feed exactly two
+emulated machine inputs. It cannot enumerate or reorder physical controllers
+behind those Libretro ports, which remains frontend/platform state, and a source
+port beyond the frontend's configured maximum-user count cannot provide input.
+During NDS sessions, successive pointer indices are inverse-mapped through the
+active compositor geometry and accepted only inside a displayed bottom screen,
+with one first-wins contact per DS, independently of controller selection. Each
+machine's selected port supplies its right analog stick plus R3 or R2 stylus
+fallback.
 Right-stick movement draws a clipped black/white reticle over that machine's
 composed bottom screen without modifying either engine frame. Cursor state is
 machine-owned and reset when that machine changes source port, so a visible
