@@ -164,6 +164,8 @@ static struct retro_input_descriptor input_descriptors[] = {
     INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_R, "Player 1 R"),
     INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_SELECT, "Player 1 Select"),
     INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_START, "Player 1 Start"),
+    INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_R2,
+               "Player 1 Touch Press (Visible Cursor)"),
     INPUT_DESC(0U, RETRO_DEVICE_ID_JOYPAD_R3, "Player 1 Touch Press"),
     ANALOG_DESC(0U, RETRO_DEVICE_ID_ANALOG_X, "Player 1 Touch X"),
     ANALOG_DESC(0U, RETRO_DEVICE_ID_ANALOG_Y, "Player 1 Touch Y"),
@@ -179,6 +181,8 @@ static struct retro_input_descriptor input_descriptors[] = {
     INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_R, "Player 2 R"),
     INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_SELECT, "Player 2 Select"),
     INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_START, "Player 2 Start"),
+    INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_R2,
+               "Player 2 Touch Press (Visible Cursor)"),
     INPUT_DESC(1U, RETRO_DEVICE_ID_JOYPAD_R3, "Player 2 Touch Press"),
     ANALOG_DESC(1U, RETRO_DEVICE_ID_ANALOG_X, "Player 2 Touch X"),
     ANALOG_DESC(1U, RETRO_DEVICE_ID_ANALOG_Y, "Player 2 Touch Y"),
@@ -981,9 +985,12 @@ static struct dualboy_machine_input read_port_input(unsigned port,
         const int16_t analog_y = core.input_state(
             port, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT,
             RETRO_DEVICE_ID_ANALOG_Y);
-        const bool pressed =
+        const bool stick_pressed =
             (button_mask &
              (UINT16_C(1) << RETRO_DEVICE_ID_JOYPAD_R3)) != 0U;
+        const bool trigger_pressed =
+            (button_mask &
+             (UINT16_C(1) << RETRO_DEVICE_ID_JOYPAD_R2)) != 0U;
         const uint16_t touch_x = (uint16_t)normalized_coordinate(
             analog_x, DUALBOY_NDS_SCREEN_WIDTH);
         const uint16_t touch_y = (uint16_t)normalized_coordinate(
@@ -999,10 +1006,12 @@ static struct dualboy_machine_input read_port_input(unsigned port,
                            DUALBOY_TOUCH_CURSOR_MOTION_PIXELS;
 
         dualboy_touch_cursor_update(&core.touch_cursors[port], touch_x,
-                                    touch_y, initially_deflected, pressed,
+                                    touch_y, initially_deflected, stick_pressed,
                                     time_available, now_usec);
 
-        if (pressed) {
+        if (stick_pressed ||
+            (trigger_pressed &&
+             dualboy_touch_cursor_visible(&core.touch_cursors[port]))) {
             input.touch_active = true;
             input.touch_x = touch_x;
             input.touch_y = touch_y;

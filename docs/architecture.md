@@ -173,14 +173,16 @@ containing a RetroPad mask and optional touch coordinates. RetroArch port 0 maps
 to machine 0 and port 1 to machine 1 before an optional coupled swap. During NDS
 sessions, successive pointer indices are inverse-mapped through the active
 compositor geometry and accepted only inside a displayed bottom screen, with one
-first-wins contact per DS. Each player's right analog stick plus held R3 is an
+first-wins contact per DS. Each player's right analog stick plus R3 or R2 is an
 independent stylus fallback. Right-stick movement draws a clipped black/white
 reticle over that port's composed bottom screen without modifying either engine
-frame; R3 remains the only analog touch press. A two-pixel activity threshold
-filters stick noise, and the cursor hides after three seconds using the optional
-Libretro performance clock or after 180 frames when that clock is unavailable.
-Physical pointer input suppresses the corresponding analog cursor for that
-frame. Machine 0 audio is resampled/buffered as interleaved signed 16-bit stereo.
+frame. R3 may reveal and press a stationary aim point; R2 presses only while the
+cursor is already visible and does not itself reveal or extend the cursor. A
+two-pixel activity threshold filters stick noise, and the cursor hides after
+three seconds using the optional Libretro performance clock or after 180 frames
+when that clock is unavailable. Physical pointer input suppresses the
+corresponding analog cursor for that frame. Machine 0 audio is
+resampled/buffered as interleaved signed 16-bit stereo.
 Machine 1 audio is drained without emission so it cannot stall timing. The
 audio-disabled option still drains emulated audio.
 

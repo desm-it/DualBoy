@@ -37,12 +37,12 @@ digest-pinned `linux/amd64` container on an ARM64 Docker host:
 ```text
 make test-linux-x86_64
 100% tests passed, 0 tests failed out of 10
-Total Test time (real) = 61.64 sec
-sameboy_adapter_unit: 8.65 seconds
-mgba_adapter_unit: 4.89 seconds
-melonds_adapter_unit: 13.99 seconds
-libretro_abi_smoke: 16.54 seconds
-libretro_nds_pointer_integration: 16.78 seconds
+Total Test time (real) = 83.90 sec
+sameboy_adapter_unit: 9.66 seconds
+mgba_adapter_unit: 6.20 seconds
+melonds_adapter_unit: 16.10 seconds
+libretro_abi_smoke: 30.19 seconds
+libretro_nds_pointer_integration: 21.12 seconds
 ```
 
 The ten passing tests were `frontend_unit`, `session_unit`,
@@ -52,9 +52,9 @@ The ten passing tests were `frontend_unit`, `session_unit`,
 `linux-x86_64` prerequisite release build also completed successfully with
 `DUALBOY_WARNINGS_AS_ERRORS=ON`.
 
-A native Linux ARM64 RelWithDebInfo diagnostic configured with warnings as
-errors, rebuilt the current source, and passed the same 10/10 tests in 6.40
-seconds. `git submodule update --init --recursive` succeeded and reported the
+A native Linux ARM64 Debug diagnostic configured with warnings as errors,
+rebuilt the current source, and passed the same 10/10 tests in 18.04 seconds.
+`git submodule update --init --recursive` succeeded and reported the
 four exact revisions in `THIRD_PARTY.md`; `third_party/melonDS` remained clean.
 
 The handoff's three direct host commands were attempted and each exited 127
@@ -106,8 +106,9 @@ Source inspection of the current working tree shows:
   themselves joined to the enabled transport;
 - fixed 256x384 top-over-bottom per-machine frames, structured controller/touch
   input, compositor-aware bottom-screen pointer routing, and per-player
-  right-stick/R3 stylus fallback with a high-contrast aim reticle that hides
-  after three seconds without meaningful stick movement;
+  right-stick stylus fallback using R3 or visibility-gated R2, with a
+  high-contrast aim reticle that hides after three seconds without meaningful
+  stick movement;
 - engine debug messages discarded at the platform entrypoint before formatting
   or allocation, while info, warning, and error messages still reach the
   frontend;
@@ -176,9 +177,10 @@ content. The passing native and x86-64 runs above exercised:
 - two simultaneous pointer indices passed through the public Libretro callbacks,
   the production compositor transform, two real melonDS objects, and actual TSC
   conversion reads with independently asserted coordinates;
-- right-stick aiming shown before R3 touch, exact R3 coordinates reaching the
-  real melonDS TSC, direct-pointer precedence, exact three-second expiry through
-  the Libretro clock, 180-frame fallback timing, two-pixel drift filtering,
+- right-stick aiming shown before R3 or R2 touch, exact R3/R2 coordinates
+  reaching the real melonDS TSC, R2 rejection while the cursor is hidden or
+  expired, direct-pointer precedence, exact three-second expiry through the
+  Libretro clock, 180-frame fallback timing, two-pixel drift filtering,
   layout/swap projection, edge clipping, and black/white contrast over light,
   dark, and colored frames;
 - high-volume melonDS debug logging rejected before formatting/allocation, with
@@ -216,7 +218,7 @@ The current source completed the native ARM64 ASan+UBSan command:
 ```text
 make asan-linux-native
 100% tests passed, 0 tests failed out of 10
-Total Test time (real) = 120.51 sec
+Total Test time (real) = 137.45 sec
 ```
 
 This is not a clean UBSan claim. CTest returned success and the log contains no

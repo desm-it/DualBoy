@@ -934,6 +934,8 @@ static bool validate_registration(const struct core_api *api)
     size_t index;
     size_t descriptor_count = 0U;
     size_t category_count = 0U;
+    bool player1_r2_described = false;
+    bool player2_r2_described = false;
 
     REQUIRE(api->api_version() == RETRO_API_VERSION);
     memset(&info, 0, sizeof(info));
@@ -1003,9 +1005,21 @@ static bool validate_registration(const struct core_api *api)
     REQUIRE(frontend.input_descriptors != NULL);
     while (descriptor_count < 64U &&
            frontend.input_descriptors[descriptor_count].description != NULL) {
+        const struct retro_input_descriptor *descriptor =
+            &frontend.input_descriptors[descriptor_count];
+
+        if (descriptor->device == RETRO_DEVICE_JOYPAD &&
+            descriptor->id == RETRO_DEVICE_ID_JOYPAD_R2) {
+            if (descriptor->port == 0U) {
+                player1_r2_described = true;
+            } else if (descriptor->port == 1U) {
+                player2_r2_described = true;
+            }
+        }
         ++descriptor_count;
     }
-    REQUIRE(descriptor_count == 30U);
+    REQUIRE(descriptor_count == 32U);
+    REQUIRE(player1_r2_described && player2_r2_described);
 
     REQUIRE(frontend.options_v2 != NULL);
     REQUIRE(frontend.options_v2->categories != NULL);
@@ -1433,13 +1447,50 @@ static bool test_nds_load_paths(struct core_api *api,
     REQUIRE(api->get_memory_data(TEST_SLOT1_SRAM_ID) == NULL);
     REQUIRE(api->get_memory_data(TEST_SLOT2_SRAM_ID) == NULL);
 
-    /* Right-stick movement reveals an aiming cursor before R3 presses the
-     * touchscreen. The target is player 1's bottom-screen pixel (64, 48). */
+    /* R2 is a touch press only after right-stick movement has made the cursor
+     * visible. It must not reveal a neutral, previously hidden cursor. */
+    frontend.time_usec = INT64_C(500000);
+    frontend.input_masks[0] =
+        (uint16_t)(UINT16_C(1) << RETRO_DEVICE_ID_JOYPAD_R2);
+    frontend.input_masks[1] =
+        (uint16_t)(UINT16_C(1) << RETRO_DEVICE_ID_JOYPAD_R2);
+    frontend.video_probe_x = 128U;
+    frontend.video_probe_y = 192U + 96U;
+    frontend.video_probe_enabled = true;
+    api->run();
+    REQUIRE(frontend.video_probe_valid);
+    REQUIRE(frontend.video_probe_pixel != TEST_PLAYER1_CURSOR_COLOR);
+    frontend.video_probe_enabled = false;
+#if defined(DUALBOY_INTERNAL_TEST)
+    {
+        void *pair_handle = dualboy_libretro_debug_engine_pair();
+        bool active = true;
+        uint16_t x = 0U;
+        uint16_t y = 0U;
+
+        REQUIRE(pair_handle != NULL);
+        REQUIRE(dualboy_melonds_debug_last_touch(pair_handle, 0U, &active,
+                                                 &x, &y));
+        REQUIRE(!active);
+        REQUIRE(dualboy_melonds_debug_last_touch(pair_handle, 1U, &active,
+                                                 &x, &y));
+        REQUIRE(!active);
+    }
+#endif
+    frontend.input_masks[0] = 0U;
+    frontend.input_masks[1] = 0U;
+
+    /* Right-stick movement reveals each aiming cursor without pressing either
+     * touchscreen. The targets differ so per-port R2 routing is observable. */
     frontend.time_usec = INT64_C(1000000);
     frontend.right_analog[0][RETRO_DEVICE_ID_ANALOG_X] =
         pointer_coordinate(64U, 256U);
     frontend.right_analog[0][RETRO_DEVICE_ID_ANALOG_Y] =
         pointer_coordinate(48U, 192U);
+    frontend.right_analog[1][RETRO_DEVICE_ID_ANALOG_X] =
+        pointer_coordinate(192U, 256U);
+    frontend.right_analog[1][RETRO_DEVICE_ID_ANALOG_Y] =
+        pointer_coordinate(144U, 192U);
     frontend.video_probe_x = 64U;
     frontend.video_probe_y = 192U + 48U;
     frontend.video_probe_enabled = true;
@@ -1458,8 +1509,42 @@ static bool test_nds_load_paths(struct core_api *api,
         REQUIRE(dualboy_melonds_debug_last_touch(pair_handle, 0U, &active,
                                                  &x, &y));
         REQUIRE(!active);
+        REQUIRE(dualboy_melonds_debug_last_touch(pair_handle, 1U, &active,
+                                                 &x, &y));
+        REQUIRE(!active);
     }
 #endif
+
+    /* Once the cursors are visible, each port's R2 presses its own coordinates
+     * without changing R3's existing click-to-reveal behavior. */
+    frontend.input_masks[0] =
+        (uint16_t)(UINT16_C(1) << RETRO_DEVICE_ID_JOYPAD_R2);
+    frontend.input_masks[1] =
+        (uint16_t)(UINT16_C(1) << RETRO_DEVICE_ID_JOYPAD_R2);
+    frontend.time_usec = INT64_C(1000001);
+    api->run();
+#if defined(DUALBOY_INTERNAL_TEST)
+    {
+        void *pair_handle = dualboy_libretro_debug_engine_pair();
+        bool active = false;
+        uint16_t x = 0U;
+        uint16_t y = 0U;
+
+        REQUIRE(pair_handle != NULL);
+        REQUIRE(dualboy_melonds_debug_last_touch(pair_handle, 0U, &active,
+                                                 &x, &y));
+        REQUIRE(active && x == 64U && y == 48U);
+        REQUIRE(dualboy_melonds_debug_tsc_touch(pair_handle, 0U, &x, &y));
+        REQUIRE(x == 64U && y == 48U);
+        REQUIRE(dualboy_melonds_debug_last_touch(pair_handle, 1U, &active,
+                                                 &x, &y));
+        REQUIRE(active && x == 192U && y == 144U);
+        REQUIRE(dualboy_melonds_debug_tsc_touch(pair_handle, 1U, &x, &y));
+        REQUIRE(x == 192U && y == 144U);
+    }
+#endif
+    frontend.input_masks[0] = 0U;
+    frontend.input_masks[1] = 0U;
 
     /* Two simultaneous contacts occupy the two displayed bottom screens.
      * The adapter test independently verifies the resulting per-machine touch
@@ -1471,7 +1556,7 @@ static bool test_nds_load_paths(struct core_api *api,
     frontend.pointer_contacts[1].y = pointer_coordinate(292U, 384U);
     frontend.pointer_contacts[1].pressed = true;
     api->run();
-    REQUIRE(frontend.video_calls == 2U);
+    REQUIRE(frontend.video_calls == 4U);
     REQUIRE(frontend.video_width == 512U && frontend.video_height == 384U);
     REQUIRE(frontend.video_pitch == 512U * sizeof(uint32_t));
     REQUIRE(frontend.video_probe_valid);
@@ -1528,6 +1613,8 @@ static bool test_nds_load_paths(struct core_api *api,
     frontend.pointer_contacts[1].pressed = false;
     frontend.layout = "top_bottom";
     frontend.option_updated = true;
+    frontend.input_masks[0] =
+        (uint16_t)(UINT16_C(1) << RETRO_DEVICE_ID_JOYPAD_R2);
     frontend.time_usec = INT64_C(4000000);
     frontend.video_probe_x = 64U;
     frontend.video_probe_y = 192U + 48U;
@@ -1539,6 +1626,19 @@ static bool test_nds_load_paths(struct core_api *api,
     REQUIRE(frontend.video_probe_valid);
     REQUIRE(frontend.video_probe_pixel != TEST_PLAYER1_CURSOR_COLOR);
     frontend.video_probe_enabled = false;
+#if defined(DUALBOY_INTERNAL_TEST)
+    {
+        void *pair_handle = dualboy_libretro_debug_engine_pair();
+        bool active = true;
+        uint16_t x = 0U;
+        uint16_t y = 0U;
+
+        REQUIRE(pair_handle != NULL);
+        REQUIRE(dualboy_melonds_debug_last_touch(pair_handle, 0U, &active,
+                                                 &x, &y));
+        REQUIRE(!active);
+    }
+#endif
 
     frontend.mode = "player1";
     frontend.option_updated = true;
