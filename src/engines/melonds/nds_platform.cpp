@@ -396,7 +396,10 @@ u64 FileLength(FileHandle *file)
 
 void Log(LogLevel level, const char *fmt, ...)
 {
-    if (!fmt)
+    /* Debug output includes unknown-I/O hot paths that can emit millions of
+     * messages per second. Drop it before either vsnprintf pass or allocation;
+     * the bridge retains its own guard as defense in depth. */
+    if (level == LogLevel::Debug || !fmt)
         return;
 
     va_list arguments;

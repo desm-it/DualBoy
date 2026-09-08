@@ -174,15 +174,18 @@ bool TestMelonDSDebugLogsAreSuppressed()
 {
     LogCapture capture;
     const PlatformConfigurationGuard configuration(CaptureLog, &capture);
+    melonDS::Platform::Log(melonDS::Platform::Debug,
+                          "high-volume diagnostic %u", 7U);
+    CHECK(capture.count == 0U);
     dualboy_melonds_platform::Log(melonDS::Platform::Debug,
-                                 "high-volume engine diagnostic");
+                                  "bridge diagnostic");
     CHECK(capture.count == 0U);
 
-    dualboy_melonds_platform::Log(melonDS::Platform::Info,
-                                 "operator-relevant engine message");
+    melonDS::Platform::Log(melonDS::Platform::Info,
+                          "operator-relevant engine message %u", 7U);
     CHECK(capture.count == 1U);
     CHECK(capture.level == DUALBOY_LOG_INFO);
-    CHECK(capture.message == "operator-relevant engine message");
+    CHECK(capture.message == "operator-relevant engine message 7");
 
     dualboy_melonds_platform::Log(melonDS::Platform::Warn,
                                  "operator warning");
