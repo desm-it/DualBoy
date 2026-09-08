@@ -88,15 +88,20 @@ pass.
 
 Source inspection of the current working tree shows:
 
-- the exact untouched melonDS gitlink built internally with its desktop
-  frontend, OpenGL renderer, JIT, GDB stub, release LTO, and embedded build
-  metadata disabled;
+- the exact untouched melonDS gitlink built internally with its regular OpenGL
+  renderer enabled and its desktop frontend, JIT, GDB stub, release LTO, and
+  embedded build metadata disabled;
 - two `melonDS::NDS` objects with distinct userdata, video, cartridge SaveRAM,
   128 KiB generated firmware, locally administered MAC addresses, and persistent
   frame workers;
 - one pair-owned upstream `LocalMP`, with its 16-instance capacity unchanged but
   DualBoy registering only IDs 0 and 1 and allowing link enable/disable without
   content reload;
+- an experimental NDS OpenGL Core 3.2 path that is mutually exclusive with
+  `LocalMP`, owns one explicit surfaceless EGL display and two unshared context
+  slots on a dedicated adapter worker, reads both texture layers back into the
+  common CPU compositor, and leaves a complete software pair when private EGL
+  negotiation is unavailable;
 - dynamic Libretro fast-forward inhibition only while both NDS instances report
   themselves joined to the enabled transport;
 - fixed 256x384 top-over-bottom per-machine frames, structured controller/touch
@@ -242,10 +247,11 @@ docker run --rm --platform linux/amd64 -u "$(id -u):$(id -g)" \
 ```
 
 The install tree contains the core and metadata plus `LICENSE`, `NOTICE`,
-`THIRD_PARTY.md`, and these eight component texts under
+`THIRD_PARTY.md`, and these eleven component license/provenance files under
 `share/doc/dualboy/licenses`: `FatFs.txt`, `FreeBIOS-BSD-2-Clause.txt`,
-`SameBoy-Expat.txt`, `Teakra-MIT.txt`, `blip-buf-LGPL-2.1.txt`,
-`mGBA-MPL-2.0.txt`, `melonDS-GPL-3.0.txt`, and
+`GLAD-generated-code.txt`, `Khronos-Apache-2.0.txt`,
+`Khronos-khrplatform.txt`, `SameBoy-Expat.txt`, `Teakra-MIT.txt`,
+`blip-buf-LGPL-2.1.txt`, `mGBA-MPL-2.0.txt`, `melonDS-GPL-3.0.txt`, and
 `tiny-AES-c-Unlicense.txt`.
 
 The primary artifacts are:
@@ -277,13 +283,15 @@ Implementation plus the automated evidence above establish these components:
   sourced only from machine 0;
 - two-instance SameBoy for GB/GBC and two-instance mGBA with the adapted PR #318
   cooperative SIO scheduler for GBA;
-- two-instance melonDS with two concurrent frame workers, software rendering,
-  built-in BIOS replacements, independent generated firmware, and pair-owned
-  upstream same-process `LocalMP` for NDS;
+- two-instance melonDS with two concurrent software/LocalMP frame workers or a
+  sequential experimental OpenGL 3.2 path, built-in BIOS replacements,
+  independent generated firmware, and pair-owned upstream same-process
+  `LocalMP` for NDS;
 - normal same-ROM, exactly-two-ROM `dualboylink` subsystem, and exactly-two-entry
   local M3U loading, with header-first detection and mixed-family rejection;
-- side-by-side, top/bottom, Player 1 only, Player 2 only, coupled swap, link
-  enable/disable, and Player 1/disabled audio core options;
+- side-by-side, top/bottom, Player 1 only, Player 2 only, coupled swap, mutually
+  exclusive NDS OpenGL/local-link selection, link enable/disable, and Player
+  1/disabled audio core options;
 - collision-safe independent SaveRAM/RTC, hash-derived pathless identities,
   nondestructive GBA `.sav` import, atomic writes, per-region
   `.dualboy.lock` coordination, and read-only behavior under contention;
@@ -330,6 +338,14 @@ such error remains a potential desynchronization and should be investigated.
 - No NDS content has yet been loaded in a real RetroArch process or on a physical
   Steam Deck. The earlier Deck launch and GBA crash investigation do not validate
   the NDS path.
+- The NDS OpenGL path deliberately does not use a frontend context. Its
+  automated accepted-path gate uses Mesa's software rasterizer with explicit
+  surfaceless EGL, proving context creation, two-instance rendering/readback,
+  reset, live renderer/link transitions, teardown, and reload without proving
+  hardware acceleration. Real RetroArch output/orientation and fallback
+  messaging plus physical Steam Deck GPU selection, performance, suspend/resume,
+  and long-session behavior remain unverified. The serial two-machine GL worker
+  and CPU readback/composition mean a speedup must be measured, not assumed.
 - The reported Pokémon Diamond save has not been rerun on its Steam Deck and was
   not imported into the test environment. The synthetic regression proves a
   general `CartRetail` corruption mechanism. Source inspection shows that the

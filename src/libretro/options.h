@@ -21,7 +21,11 @@ struct dualboy_options {
     bool link_enabled;
     bool swap_players;
     bool audio_player1;
+    enum dualboy_video_renderer nds_renderer;
 };
+
+#define DUALBOY_OPTION_LINK "dualboy_link"
+#define DUALBOY_OPTION_NDS_RENDERER "dualboy_nds_renderer"
 
 void dualboy_options_set_defaults(struct dualboy_options *options);
 

@@ -17,8 +17,8 @@ content / session / options / saves / state / compositor
         |
 dualboy_engine_ops
        /       |       \
-SameBoy      mGBA      melonDS + upstream LocalMP
-pair         pair      pair with two frame workers
+SameBoy      mGBA      melonDS + LocalMP/OpenGL
+pair         pair      pair + 2 software workers + EGL worker
 ```
 
 Libretro's callback ABI requires one process-global frontend context. Mutable
@@ -84,11 +84,12 @@ payload then restores queues, barriers, and coordinator time together.
 
 The melonDS adapter owns two distinct `melonDS::NDS` objects, two instance
 contexts, one untouched upstream `melonDS::LocalMP`, and two persistent worker
-threads. Each frontend frame captures both inputs, releases both workers to call
-one `NDS::RunFrame()` concurrently, waits for both completions, and then exposes
-their software framebuffers. Running linked instances concurrently is required
-because `LocalMP` can wait for the peer. Teardown wakes and joins both workers
-before destroying engine objects, including partial-load paths.
+threads. In software mode, each frontend frame captures both inputs, releases
+both workers to call one `NDS::RunFrame()` concurrently, waits for both
+completions, and then exposes their software framebuffers. Running linked
+instances concurrently is required because `LocalMP` can wait for the peer.
+Teardown wakes and joins both workers before destroying engine objects,
+including partial-load paths.
 
 The worker barrier has a ten-second soft deadline. Crossing it requests an
 abort, removes both machines from `LocalMP`, waits for both workers to become
@@ -116,8 +117,47 @@ all dynamic ranges used by melonDS are validated before bytes enter the live
 engine. The two deterministic locally administered MAC addresses end in `00`
 and `01`; invalid or duplicate persisted identities are repaired and checksummed
 before reset. No Nintendo BIOS or external firmware dump is bundled or loaded.
-OpenGL and the JIT are disabled; the initial adapter uses the interpreter and
-software renderer.
+The melonDS regular OpenGL renderer is enabled from the byte-clean pin, with the
+hash-verified build-tree `GPU2D_OpenGL.cpp` lifetime adaptation documented
+below; the JIT remains disabled. Software is the default. On Linux, the NDS
+option can create one dynamically loaded, explicitly surfaceless EGL display on
+a dedicated adapter worker. DualBoy creates two pbuffer-backed OpenGL 3.2 core
+contexts on that display, one for each machine. The contexts have no share
+group, so the two upstream
+renderers have separate object-name and binding namespaces. Context creation is
+serialized before either renderer is published, and every renderer install,
+frame, reset, and teardown runs synchronously on the same context-owning worker.
+No GL call or EGL transition occurs on Libretro's run thread. DualBoy does not
+request or replace a Libretro frontend hardware context; it obtains an explicit
+surfaceless EGL display and creates dedicated contexts on its worker. EGL 1.5
+may return the same display handle to another process component for the same
+platform/native/attribute tuple, so teardown destroys DualBoy's contexts and
+surfaces and releases its worker thread but deliberately does not call
+`eglTerminate` on that process-shared display. The dynamically loaded EGL
+library is marked non-unloadable for the same reason and stays resident for the
+rest of the process.
+
+OpenGL mode disables `LocalMP` and runs the two machines sequentially by
+switching between their private context slots. Software mode retains the two
+persistent concurrent frame workers required by `LocalMP`. The option applies
+live: selecting OpenGL first disables LocalMP, selecting LocalMP first restores
+both software renderers, and both options may be off. Both Libretro policy and
+the adapter enforce the exclusion, and transactional failures either restore a
+complete software pair or retire the pair without destroying GL objects on the
+wrong thread/context.
+
+DualBoy reads the two layers of each upstream output texture into the existing
+native XRGB buffers. The established CPU compositor, touch-reticle path, and
+ordinary Libretro CPU video callback therefore remain common to both renderers.
+Missing `libEGL.so.1`, explicit surfaceless-platform/config failure, or a driver
+below OpenGL 3.2 leaves a valid software pair. The worker logs the GL vendor and
+renderer and identifies known Mesa software rasterizers. Since two GL frames,
+context switches, CPU readback, and CPU composition remain serialized, this
+architecture does not by itself establish a speedup; physical Deck profiling is
+still required. The ten-second soft deadline is checked after each synchronous
+GL machine call, so a slow first call can prevent the second from running.
+Because an in-progress upstream call cannot be interrupted, a call that never
+returns remains uncancellable in either mode.
 
 ## Video, input, and audio
 
@@ -239,12 +279,17 @@ explicitly asked for `linux/amd64`, so an ARM development host cannot silently
 produce the wrong architecture.
 
 The melonDS build is pinned to an exact gitlink and configured with
-`BUILD_QT_SDL`, `ENABLE_GDBSTUB`, `ENABLE_OGLRENDERER`, `ENABLE_JIT`,
+`ENABLE_OGLRENDERER` on and `BUILD_QT_SDL`, `ENABLE_GDBSTUB`, `ENABLE_JIT`,
 `ENABLE_LTO_RELEASE`, and `MELONDS_EMBED_BUILD_INFO` off. Upstream's `core`
 archive and the otherwise-unselected, untouched `src/net/LocalMP.cpp` translation
-unit are statically linked; all platform glue remains in DualBoy. A CMake install
-also stages `LICENSE`, `NOTICE`, `THIRD_PARTY.md`, and the selected dependency
-license texts under `share/doc/dualboy`.
+unit are statically linked. A hash-verified build-tree adaptation of
+`GPU2D_OpenGL.cpp` initializes and releases two CPU vertex arrays omitted by the
+pinned destructor; the gitlink remains byte-clean and the generated source keeps
+its upstream GPL header. The untouched generated GLAD source normally owned by
+melonDS's desktop frontend is built privately and resolves functions through
+the dedicated EGL contexts; all platform glue remains in DualBoy. A CMake
+install also stages `LICENSE`, `NOTICE`, `THIRD_PARTY.md`, and the selected
+dependency license texts under `share/doc/dualboy`.
 
 melonDS is GPL-3.0-or-later. Consequently the combined shared object and its
 binary distribution are conveyed under GPLv3-compatible terms, while

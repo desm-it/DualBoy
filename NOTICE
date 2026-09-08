@@ -13,6 +13,10 @@ Component inventory
 
 * melonDS, copyright the melonDS authors and contributors:
   GPL-3.0-or-later. Source: https://github.com/melonDS-emu/melonDS
+  DualBoy compiles a hash-verified build-tree adaptation of
+  `GPU2D_OpenGL.cpp` that initializes and releases two CPU vertex arrays omitted
+  by the pinned destructor. The generated source retains melonDS's GPL terms;
+  exact provenance and source-distribution requirements are in THIRD_PARTY.md.
 * SameBoy, copyright (c) 2015-2026 Lior Halphon:
   Expat. Source: https://github.com/LIJI32/SameBoy
 * mGBA and the libretro/mgba PR #318 snapshot:
@@ -30,6 +34,13 @@ The selected melonDS static core contains these bundled components:
 * SHA-1 in C by Steve Reid: stated by its source to be 100% public domain.
 * tiny-AES-c: stated by its upstream README to be public domain and accompanied
   by the Unlicense.
+* GLAD 0.1.36 generated `glad.c`/`glad.h`: the GLAD project documents generated
+  output as available under Public Domain, WTFPL, or CC0 terms, while warning
+  that Khronos-specification-derived portions may be Apache-2.0. The generated
+  files do not select one exclusive term; their provenance notice and the full
+  Apache-2.0 text are installed with DualBoy.
+* Khronos `khrplatform.h`, used by melonDS's generated GLAD loader: Khronos
+  permissive license, with its complete notice retained in the installed file.
 
 CMake installs the available full license texts beneath
 share/doc/dualboy/licenses. Exact source revisions and build selections are in

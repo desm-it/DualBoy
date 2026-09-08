@@ -165,12 +165,29 @@ still requires physical validation.
 | --- | --- | --- | --- |
 | `dualboy_mode` | `dual`, `player1`, `player2` | `dual` | Show both screens or one player's screen. |
 | `dualboy_layout` | `side_by_side`, `top_bottom` | `side_by_side` | Arrange the two native-resolution frames. |
+| `dualboy_nds_renderer` | `software`, `opengl` | `software` | Select the NDS renderer live. OpenGL requires Linux, `libEGL.so.1`, explicit surfaceless EGL, and an OpenGL 3.2 driver. |
 | `dualboy_link` | `enabled`, `disabled` | `enabled` | Attach or detach the emulated cable or NDS local-wireless transport. Changing this for GBA resets both machines; NDS changes dynamically without a reload. |
 | `dualboy_swap_players` | `disabled`, `enabled` | `disabled` | Swap screens and controller ports as one operation. |
 | `dualboy_audio_source` | `player1`, `disabled` | `player1` | Emit Player 1 audio or suppress output while preserving timing. |
 
 Options are exposed through Libretro core-options v2, v1, and the legacy variable
 API and are read while content is running.
+
+For NDS, **OpenGL** and **Local Link** are mutually exclusive. Selecting OpenGL
+turns Local Link off immediately; selecting Local Link first restores Software
+and then turns the link on. Turning OpenGL off does not turn the link back on, so
+both may be off. On Linux, OpenGL obtains an explicit surfaceless EGL display
+and uses one worker with two dedicated, unshared contexts, one per emulated DS.
+It reads the native frames back to the CPU and uses the same Libretro video
+callback as Software; DualBoy does not request or replace a Libretro frontend
+hardware context. If that EGL/OpenGL 3.2 path is unavailable, DualBoy safely
+stays on Software.
+
+The log identifies the selected GL vendor and renderer and warns for known Mesa
+software rasterizers. Because both DS frames are serialized on one EGL worker
+and then read back and composed on the CPU, OpenGL is not assumed to be faster.
+The automated Linux gate exercises Mesa software rendering; real RetroArch,
+physical Steam Deck GPU acceleration, and performance remain unverified.
 
 ## Saves and save states
 

@@ -27,12 +27,92 @@ extern "C" {
 #include <vector>
 #include <unistd.h>
 
+#if defined(__linux__)
+#include <dlfcn.h>
+#endif
+
 namespace {
 
 constexpr std::size_t kRomSize = 0x10000U;
 constexpr std::size_t kArm9Offset = 0x8000U;
 constexpr std::size_t kArm7Offset = 0x8004U;
 constexpr std::size_t kFirmwareSize = 128U * 1024U;
+
+#if defined(__linux__)
+using EglBoolean = unsigned int;
+using EglEnum = unsigned int;
+using EglInt = int;
+using EglDisplay = void *;
+using EglGetPlatformDisplay = EglDisplay (*)(EglEnum, void *,
+                                             const std::intptr_t *);
+using EglInitialize = EglBoolean (*)(EglDisplay, EglInt *, EglInt *);
+using EglQueryString = const char *(*)(EglDisplay, EglInt);
+using EglTerminate = EglBoolean (*)(EglDisplay);
+
+constexpr EglEnum kEglPlatformSurfacelessMesa = 0x31ddU;
+constexpr EglInt kEglVersion = 0x3054;
+
+template <typename Function>
+bool LoadEglSymbol(void *library, const char *name, Function &function)
+{
+    void *symbol;
+
+    static_assert(sizeof(function) == sizeof(symbol));
+    (void)dlerror();
+    symbol = dlsym(library, name);
+    if (symbol == nullptr) return false;
+    std::memcpy(&function, &symbol, sizeof(function));
+    return true;
+}
+
+class SurfacelessEglSentinel {
+public:
+    SurfacelessEglSentinel() = default;
+    SurfacelessEglSentinel(const SurfacelessEglSentinel &) = delete;
+    SurfacelessEglSentinel &operator=(const SurfacelessEglSentinel &) = delete;
+
+    ~SurfacelessEglSentinel()
+    {
+        if (display_ != nullptr && terminate_ != nullptr) {
+            (void)terminate_(display_);
+        }
+        if (library_ != nullptr) (void)dlclose(library_);
+    }
+
+    bool Initialize()
+    {
+        EglInt major = 0;
+        EglInt minor = 0;
+
+        library_ = dlopen("libEGL.so.1", RTLD_NOW | RTLD_LOCAL);
+        if (library_ == nullptr ||
+            !LoadEglSymbol(library_, "eglGetPlatformDisplay",
+                           get_platform_display_) ||
+            !LoadEglSymbol(library_, "eglInitialize", initialize_) ||
+            !LoadEglSymbol(library_, "eglQueryString", query_string_) ||
+            !LoadEglSymbol(library_, "eglTerminate", terminate_)) {
+            return false;
+        }
+        display_ = get_platform_display_(kEglPlatformSurfacelessMesa, nullptr,
+                                         nullptr);
+        return display_ != nullptr && initialize_(display_, &major, &minor) != 0U;
+    }
+
+    bool IsInitialized() const
+    {
+        return display_ != nullptr && query_string_ != nullptr &&
+               query_string_(display_, kEglVersion) != nullptr;
+    }
+
+private:
+    void *library_ = nullptr;
+    EglDisplay display_ = nullptr;
+    EglGetPlatformDisplay get_platform_display_ = nullptr;
+    EglInitialize initialize_ = nullptr;
+    EglQueryString query_string_ = nullptr;
+    EglTerminate terminate_ = nullptr;
+};
+#endif
 
 #define CHECK(expression)                                                       \
     do {                                                                        \
@@ -220,6 +300,80 @@ bool LoadPair(PairOwner &owner,
                                      sizeof(error)));
     CHECK(owner.operations->load_rom(owner.pair, 1U, &roms[1], error,
                                      sizeof(error)));
+    return true;
+}
+
+bool TestRendererAndLocalMPExclusivity(
+    const std::array<std::uint8_t, kRomSize> &first,
+    const std::array<std::uint8_t, kRomSize> &second)
+{
+    PairOwner owner;
+    char error[512]{};
+
+    CHECK(LoadPair(owner, first, second));
+    CHECK(owner.operations->set_video_renderer != nullptr);
+    CHECK(owner.operations->video_renderer != nullptr);
+    CHECK(owner.operations->set_link(owner.pair, true, error, sizeof(error)));
+    CHECK(!owner.operations->set_video_renderer(
+        owner.pair, DUALBOY_VIDEO_RENDERER_OPENGL, error, sizeof(error)));
+    CHECK(owner.operations->video_renderer(owner.pair) ==
+          DUALBOY_VIDEO_RENDERER_SOFTWARE);
+    CHECK(owner.operations->set_link(owner.pair, false, error, sizeof(error)));
+
+    if (std::getenv("DUALBOY_REQUIRE_OPENGL") == nullptr) return true;
+
+    {
+        PairOwner rollback_owner;
+        CHECK(LoadPair(rollback_owner, first, second));
+        CHECK(dualboy_melonds_debug_fail_next_gl_renderer(
+            rollback_owner.pair, 1U));
+        CHECK(!rollback_owner.operations->set_video_renderer(
+            rollback_owner.pair, DUALBOY_VIDEO_RENDERER_OPENGL, error,
+            sizeof(error)));
+        CHECK(rollback_owner.operations->video_renderer(rollback_owner.pair) ==
+              DUALBOY_VIDEO_RENDERER_SOFTWARE);
+        CHECK(dualboy_melonds_debug_live_instances(rollback_owner.pair) == 2U);
+        CHECK(rollback_owner.operations->run_frame(
+            rollback_owner.pair, error, sizeof(error)));
+    }
+
+#if defined(__linux__)
+    SurfacelessEglSentinel sentinel;
+    CHECK(sentinel.Initialize());
+    CHECK(sentinel.IsInitialized());
+#endif
+
+    CHECK(owner.operations->set_video_renderer(
+        owner.pair, DUALBOY_VIDEO_RENDERER_OPENGL, error, sizeof(error)));
+    /* The pinned Linux gate runs llvmpipe under x86-64 emulation, where the
+     * first shader/JIT frame can legitimately exceed the production 10 s
+     * soft deadline. Keep the runtime default honest and widen only this
+     * deterministic accepted-path test. */
+    CHECK(dualboy_melonds_debug_set_frame_deadline_ms(owner.pair, 120000U));
+    CHECK(owner.operations->video_renderer(owner.pair) ==
+          DUALBOY_VIDEO_RENDERER_OPENGL);
+    CHECK(!owner.operations->set_link(owner.pair, true, error, sizeof(error)));
+    CHECK(!owner.operations->link_transport_active(owner.pair));
+    if (!owner.operations->run_frame(owner.pair, error, sizeof(error))) {
+        std::fprintf(stderr, "OpenGL frame failed: %s\n", error);
+        return false;
+    }
+    owner.operations->reset(owner.pair);
+    if (!owner.operations->run_frame(owner.pair, error, sizeof(error))) {
+        std::fprintf(stderr, "OpenGL frame after reset failed: %s\n", error);
+        return false;
+    }
+    CHECK(owner.operations->set_video_renderer(
+        owner.pair, DUALBOY_VIDEO_RENDERER_SOFTWARE, error, sizeof(error)));
+    CHECK(owner.operations->video_renderer(owner.pair) ==
+          DUALBOY_VIDEO_RENDERER_SOFTWARE);
+#if defined(__linux__)
+    /* EGL 1.5 returns the same display for identical platform/native/attribute
+     * triples. Adapter teardown must not terminate a process-shared
+     * surfaceless display that another component initialized first. */
+    CHECK(sentinel.IsInitialized());
+#endif
+    CHECK(owner.operations->set_link(owner.pair, true, error, sizeof(error)));
     return true;
 }
 
@@ -482,7 +636,7 @@ bool TestWorkerDeadlineQuiescesBeforeReturning(
     owner.operations->reset(owner.pair);
     CHECK(!owner.operations->run_frame(owner.pair, second_error,
                                        sizeof(second_error)));
-    CHECK(std::strstr(second_error, "unavailable after a frame timeout") !=
+    CHECK(std::strstr(second_error, "unavailable after an earlier") !=
           nullptr);
 
     const auto destroy_started = std::chrono::steady_clock::now();
@@ -1070,6 +1224,7 @@ int main()
     if (!TestMelonDSDebugLogsAreSuppressed() ||
         first_detection.platform != DUALBOY_PLATFORM_NDS ||
         second_detection.platform != DUALBOY_PLATFORM_NDS ||
+        !TestRendererAndLocalMPExclusivity(first, second) ||
         !TestInstancesFramesInputAndTransport(first, second) ||
         !TestPartialAndRepeatedCleanup(first) ||
         !TestGeneratedFirmwareValidation(first, second) ||

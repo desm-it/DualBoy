@@ -21,10 +21,12 @@ Transfer these two files to the Deck:
 - `build-linux-x86_64/dualboy_libretro.so`
 - `dualboy_libretro.info`
 
-If conveying the binary to anyone else, use the CMake install tree or otherwise
-include its `share/doc/dualboy` notices and license texts plus the corresponding
-source/build offer required by GPLv3. A personal copy between your own machines
-does not replace those files in a redistributable package.
+If conveying the binary to anyone else, use the CMake install tree for the
+binary, notices, and license texts, and also accompany it with complete
+corresponding source and build scripts through a GPLv3-compliant distribution
+method. The install tree alone is not a redistributable source bundle. A
+personal copy between your own machines does not replace those materials in a
+redistributable package.
 
 Do not copy a macOS or ARM host build. On the Deck, `file
 dualboy_libretro.so` should identify an x86-64 ELF shared object.
@@ -155,7 +157,10 @@ Useful core options are:
 
 - **Display Mode = Dual**
 - **Dual-screen Layout = Side by Side** for the Deck's landscape screen
-- **Local Link = Enabled**
+- For local wireless: **Nintendo DS Renderer = Software** and **Local Link =
+  Enabled**
+- For experimental non-linked rendering: **Nintendo DS Renderer = OpenGL** and
+  **Local Link = Disabled**
 - **Swap Players/Screens = Enabled** when physical port order is reversed
 - **Audio Source = Player 1** or **Disabled**
 
@@ -167,6 +172,18 @@ enabled transport, then DualBoy requests a frontend override to inhibit it; the
 override is released when either console leaves or link is disabled. The MVP
 emits only Player 1 audio. Enable **Local Link** before entering a multiplayer
 lobby; toggling it off during play intentionally disconnects the session.
+
+NDS OpenGL and Local Link are mutually exclusive. Choosing either one disables
+the other live, and both may be disabled. OpenGL requires the Deck's
+`libEGL.so.1` runtime, explicit surfaceless EGL support, and an OpenGL 3.2 driver.
+DualBoy obtains an explicit surfaceless EGL display and creates a dedicated
+two-context pair on its NDS worker. It does not request or replace a Libretro
+hardware context, and final frames still use the ordinary CPU video callback.
+The log reports the actual GL renderer and warns if it is a known software
+rasterizer. This path has not yet passed the
+physical Deck/RetroArch gate, and its serial GL execution plus CPU readback may
+not be faster, so retain Software for the documented multiplayer procedure
+until device validation and profiling are recorded.
 
 NDS manual states, rewind, and runahead are unsupported because the two machine
 states do not contain the pair-owned `LocalMP` queues. Save a per-core override

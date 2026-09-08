@@ -7,9 +7,15 @@ RUN apt-get update \
       ca-certificates=20250419~deb12u1 \
       cmake=3.25.1-1 \
       file=1:5.44-3 \
+      libegl1=1.6.0-1 \
+      libegl-mesa0=22.3.6-1+deb12u2 \
+      libgl1-mesa-dri=22.3.6-1+deb12u2 \
       ninja-build=1.11.1-2~deb12u1 \
       pkg-config=1.8.1-1 \
       python3=3.11.2-1+b1 \
  && rm -rf /var/lib/apt/lists/*
 
 ENV LC_ALL=C.UTF-8
+ENV EGL_PLATFORM=surfaceless
+ENV LIBGL_ALWAYS_SOFTWARE=1
+ENV DUALBOY_REQUIRE_OPENGL=1

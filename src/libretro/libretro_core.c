@@ -72,6 +72,7 @@ struct dualboy_libretro_context {
     bool fastforward_inhibited;
     bool fastforward_warning_logged;
     bool initialized;
+    enum dualboy_video_renderer loaded_nds_renderer;
 };
 
 static struct dualboy_libretro_context core;
@@ -215,6 +216,96 @@ static void core_log(enum retro_log_level level, const char *format, ...)
     } else {
         (void)fprintf(stderr, "[DualBoy] %s\n", message);
     }
+}
+
+static bool force_core_option(const char *key, const char *value)
+{
+    struct retro_variable variable = {key, value};
+
+    return core.environment != NULL &&
+           core.environment(RETRO_ENVIRONMENT_SET_VARIABLE, &variable);
+}
+
+static bool set_loaded_renderer(enum dualboy_video_renderer renderer,
+                                char *error,
+                                size_t error_size)
+{
+    if (!core.session.loaded || core.session.engine == NULL ||
+        core.session.engine->family != DUALBOY_ENGINE_MELONDS) {
+        return true;
+    }
+    if (core.session.engine->set_video_renderer == NULL) {
+        (void)snprintf(error, error_size,
+                       "Nintendo DS adapter has no renderer transition");
+        return false;
+    }
+    return core.session.engine->set_video_renderer(
+        core.session.pair, renderer, error, error_size);
+}
+
+static void force_software_renderer(const char *reason)
+{
+    core.loaded_nds_renderer = DUALBOY_VIDEO_RENDERER_SOFTWARE;
+    core.options.nds_renderer = DUALBOY_VIDEO_RENDERER_SOFTWARE;
+    (void)force_core_option(DUALBOY_OPTION_NDS_RENDERER, "software");
+    core_log(RETRO_LOG_WARN,
+             "melonDS OpenGL is unavailable; using software rendering: %s",
+             reason != NULL && reason[0] != '\0' ? reason
+                                                  : "unknown renderer error");
+}
+
+static bool activate_loaded_gl_renderer(void)
+{
+    char error[DUALBOY_ERROR_CAPACITY] = {0};
+
+    if (!core.session.loaded || core.session.engine == NULL ||
+        core.session.engine->family != DUALBOY_ENGINE_MELONDS ||
+        core.options.nds_renderer != DUALBOY_VIDEO_RENDERER_OPENGL) {
+        return true;
+    }
+    if (!set_loaded_renderer(DUALBOY_VIDEO_RENDERER_OPENGL, error,
+                             sizeof(error))) {
+        if (core.session.engine->video_renderer != NULL &&
+            core.session.engine->video_renderer(core.session.pair) !=
+                DUALBOY_VIDEO_RENDERER_SOFTWARE) {
+            core.loaded_nds_renderer = DUALBOY_VIDEO_RENDERER_OPENGL;
+            core_log(RETRO_LOG_ERROR,
+                     "melonDS OpenGL activation left the NDS pair unusable: %s",
+                     error[0] != '\0' ? error : "unknown renderer error");
+            return false;
+        }
+        force_software_renderer(error);
+        return true;
+    }
+
+    core.loaded_nds_renderer = DUALBOY_VIDEO_RENDERER_OPENGL;
+    core_log(RETRO_LOG_INFO,
+             "enabled melonDS OpenGL 3.2 on DualBoy's isolated EGL worker");
+    return true;
+}
+
+static bool deactivate_loaded_gl_renderer(void)
+{
+    char error[DUALBOY_ERROR_CAPACITY] = {0};
+
+    if (core.session.loaded && core.session.engine != NULL &&
+        core.session.engine->video_renderer != NULL &&
+        core.session.engine->video_renderer(core.session.pair) ==
+            DUALBOY_VIDEO_RENDERER_OPENGL) {
+        if (!set_loaded_renderer(DUALBOY_VIDEO_RENDERER_SOFTWARE, error,
+                                 sizeof(error))) {
+            core_log(RETRO_LOG_ERROR,
+                     "could not release melonDS OpenGL resources on its worker: %s",
+                     error[0] != '\0' ? error : "unknown renderer error");
+            if (core.session.engine->video_renderer(core.session.pair) !=
+                DUALBOY_VIDEO_RENDERER_SOFTWARE) {
+                core.loaded_nds_renderer = DUALBOY_VIDEO_RENDERER_OPENGL;
+                return false;
+            }
+        }
+    }
+    core.loaded_nds_renderer = DUALBOY_VIDEO_RENDERER_SOFTWARE;
+    return true;
 }
 
 static void engine_log(void *context,
@@ -426,10 +517,12 @@ static void unload_current(void)
         core_log(RETRO_LOG_ERROR, "save flush during unload failed: %s",
                  error[0] != '\0' ? error : "unknown persistence error");
     }
+    (void)deactivate_loaded_gl_renderer();
     dualboy_save_manager_deinit(&core.saves);
     dualboy_session_unload(&core.session);
     reset_touch_cursors();
     core.geometry_valid = false;
+    core.loaded_nds_renderer = DUALBOY_VIDEO_RENDERER_SOFTWARE;
 }
 
 /* A failed transactional rollback can leave engine memory untrustworthy.
@@ -437,6 +530,7 @@ static void unload_current(void)
 static void discard_current(void)
 {
     set_fastforward_inhibition(false);
+    (void)deactivate_loaded_gl_renderer();
     dualboy_save_manager_deinit(&core.saves);
     dualboy_session_unload(&core.session);
     reset_touch_cursors();
@@ -585,6 +679,18 @@ static bool load_detected_pair(struct dualboy_rom roms[DUALBOY_MACHINE_COUNT],
                  dualboy_platform_name(roms[0].platform));
         return false;
     }
+    core.loaded_nds_renderer = DUALBOY_VIDEO_RENDERER_SOFTWARE;
+    if (family == DUALBOY_ENGINE_MELONDS &&
+        core.options.nds_renderer == DUALBOY_VIDEO_RENDERER_OPENGL) {
+        if (core.options.link_enabled) {
+            core.options.link_enabled = false;
+            core.frontend_link_value = false;
+            core.frontend_link_known = true;
+            (void)force_core_option(DUALBOY_OPTION_LINK, "disabled");
+            core_log(RETRO_LOG_INFO,
+                     "disabled Local Link because the NDS OpenGL renderer was selected");
+        }
+    }
     if (!set_pixel_format() || !query_directories(error, sizeof(error))) {
         if (error[0] != '\0') {
             core_log(RETRO_LOG_ERROR, "%s", error);
@@ -622,6 +728,17 @@ static bool load_detected_pair(struct dualboy_rom roms[DUALBOY_MACHINE_COUNT],
                  "another DualBoy instance owns core-managed saves in %s; "
                  "this instance is read-only",
                  core.save_directory);
+    }
+    if (family == DUALBOY_ENGINE_MELONDS &&
+        core.options.nds_renderer == DUALBOY_VIDEO_RENDERER_OPENGL) {
+        /* Persistence initialization performs the final NDS reset. Install
+         * the GL renderers afterwards, on their context-owning worker. A
+         * rejected or unavailable EGL path intentionally leaves the loaded
+         * pair on its already-valid software renderers. */
+        if (!activate_loaded_gl_renderer()) {
+            discard_current();
+            return false;
+        }
     }
 
     core.session.display = current_display();
@@ -1032,6 +1149,39 @@ static void publish_video_with_touch_cursors(
     core.video(pixels, composite->width, composite->height, pitch);
 }
 
+static void reflect_link_option(bool enabled)
+{
+    const bool frontend_change =
+        !core.frontend_link_known || core.frontend_link_value != enabled;
+
+    core.options.link_enabled = enabled;
+    core.frontend_link_value = enabled;
+    core.frontend_link_known = true;
+    if (frontend_change) {
+        (void)force_core_option(DUALBOY_OPTION_LINK,
+                                enabled ? "enabled" : "disabled");
+    }
+}
+
+static void reflect_renderer_option(enum dualboy_video_renderer renderer)
+{
+    core.options.nds_renderer = renderer;
+    (void)force_core_option(
+        DUALBOY_OPTION_NDS_RENDERER,
+        renderer == DUALBOY_VIDEO_RENDERER_OPENGL ? "opengl" : "software");
+}
+
+static void retire_failed_renderer_session(const char *operation)
+{
+    core_log(RETRO_LOG_ERROR,
+             "%s left the Nintendo DS renderer unusable; discarding the session",
+             operation != NULL ? operation : "renderer transition");
+    discard_current();
+    if (core.environment != NULL) {
+        (void)core.environment(RETRO_ENVIRONMENT_SHUTDOWN, NULL);
+    }
+}
+
 static void update_options(void)
 {
     struct dualboy_options candidate;
@@ -1043,6 +1193,11 @@ static void update_options(void)
         updated) {
         bool requested_link;
         bool frontend_link_changed;
+        bool renderer_changed;
+        bool old_link = core.options.link_enabled;
+        enum dualboy_video_renderer old_renderer =
+            core.options.nds_renderer;
+        enum dualboy_video_renderer requested_renderer;
 
         candidate = core.options;
         if (core.frontend_link_known) {
@@ -1052,10 +1207,140 @@ static void update_options(void)
         requested_link = candidate.link_enabled;
         frontend_link_changed = !core.frontend_link_known ||
                                 requested_link != core.frontend_link_value;
+        renderer_changed =
+            candidate.nds_renderer != core.options.nds_renderer;
+
+        if (nds_session_loaded() && requested_link &&
+            candidate.nds_renderer == DUALBOY_VIDEO_RENDERER_OPENGL) {
+            /* A real frontend normally changes one option per update. Local
+             * Link wins when it alone was just enabled; renderer selection
+             * wins when OpenGL was selected (or both values arrived at once). */
+            if (frontend_link_changed && !renderer_changed) {
+                candidate.nds_renderer = DUALBOY_VIDEO_RENDERER_SOFTWARE;
+                (void)force_core_option(DUALBOY_OPTION_NDS_RENDERER,
+                                        "software");
+            } else {
+                requested_link = false;
+                candidate.link_enabled = false;
+                (void)force_core_option(DUALBOY_OPTION_LINK, "disabled");
+            }
+        }
         core.frontend_link_value = requested_link;
         core.frontend_link_known = true;
-        candidate.link_enabled = core.options.link_enabled;
+        requested_renderer = candidate.nds_renderer;
+        candidate.link_enabled = old_link;
+        candidate.nds_renderer = old_renderer;
         core.options = candidate;
+
+        if (nds_session_loaded()) {
+            core.link_request_pending = false;
+            core.link_failure_logged = false;
+
+            if (requested_renderer == DUALBOY_VIDEO_RENDERER_OPENGL) {
+                const bool restore_link_on_failure = old_link;
+
+                if (old_link && !dualboy_session_set_link(
+                                    &core.session, false, error,
+                                    sizeof(error))) {
+                    core_log(RETRO_LOG_ERROR,
+                             "could not disable Local Link for OpenGL: %s",
+                             error[0] != '\0' ? error
+                                               : "unknown link error");
+                    reflect_link_option(true);
+                    reflect_renderer_option(
+                        DUALBOY_VIDEO_RENDERER_SOFTWARE);
+                    return;
+                }
+                core.options.link_enabled = false;
+                core.options.nds_renderer =
+                    DUALBOY_VIDEO_RENDERER_OPENGL;
+
+                if (core.loaded_nds_renderer !=
+                        DUALBOY_VIDEO_RENDERER_OPENGL &&
+                    !activate_loaded_gl_renderer()) {
+                    retire_failed_renderer_session("OpenGL activation");
+                    return;
+                }
+                if (core.loaded_nds_renderer ==
+                    DUALBOY_VIDEO_RENDERER_OPENGL) {
+                    core.options.nds_renderer =
+                        DUALBOY_VIDEO_RENDERER_OPENGL;
+                    reflect_link_option(false);
+                    return;
+                }
+
+                /* Missing EGL/OpenGL is a safe software fallback. Restore the
+                 * link state that was disabled transactionally for activation. */
+                reflect_renderer_option(DUALBOY_VIDEO_RENDERER_SOFTWARE);
+                if (restore_link_on_failure &&
+                    dualboy_session_set_link(&core.session, true, error,
+                                             sizeof(error))) {
+                    reflect_link_option(true);
+                } else {
+                    if (restore_link_on_failure) {
+                        core_log(RETRO_LOG_ERROR,
+                                 "could not restore Local Link after OpenGL fallback: %s",
+                                 error[0] != '\0' ? error
+                                                   : "unknown link error");
+                    }
+                    reflect_link_option(false);
+                }
+                return;
+            }
+
+            {
+                const bool rollback_to_gl =
+                    core.loaded_nds_renderer ==
+                    DUALBOY_VIDEO_RENDERER_OPENGL;
+                if (rollback_to_gl && !deactivate_loaded_gl_renderer()) {
+                    reflect_link_option(false);
+                    reflect_renderer_option(DUALBOY_VIDEO_RENDERER_OPENGL);
+                    retire_failed_renderer_session("OpenGL teardown");
+                    return;
+                }
+                core.options.nds_renderer = DUALBOY_VIDEO_RENDERER_SOFTWARE;
+
+                if (requested_link != core.options.link_enabled &&
+                    !dualboy_session_set_link(&core.session, requested_link,
+                                              error, sizeof(error))) {
+                    core_log(RETRO_LOG_ERROR, "link option change failed: %s",
+                             error[0] != '\0' ? error
+                                               : "unknown engine error");
+                    if (rollback_to_gl && requested_link) {
+                        core.options.nds_renderer =
+                            DUALBOY_VIDEO_RENDERER_OPENGL;
+                        if (!activate_loaded_gl_renderer()) {
+                            retire_failed_renderer_session(
+                                "OpenGL rollback");
+                            return;
+                        }
+                        if (core.loaded_nds_renderer ==
+                            DUALBOY_VIDEO_RENDERER_OPENGL) {
+                            reflect_renderer_option(
+                                DUALBOY_VIDEO_RENDERER_OPENGL);
+                        } else {
+                            reflect_renderer_option(
+                                DUALBOY_VIDEO_RENDERER_SOFTWARE);
+                        }
+                    } else {
+                        reflect_renderer_option(
+                            DUALBOY_VIDEO_RENDERER_SOFTWARE);
+                    }
+                    reflect_link_option(core.session.link_enabled);
+                    return;
+                }
+                core.options.link_enabled = requested_link;
+                core.options.nds_renderer =
+                    DUALBOY_VIDEO_RENDERER_SOFTWARE;
+                core.frontend_link_value = requested_link;
+                core.frontend_link_known = true;
+                return;
+            }
+        }
+
+        /* Other engines retain the existing asynchronous link retry boundary;
+         * the NDS renderer preference is simply remembered for the next load. */
+        core.options.nds_renderer = requested_renderer;
         if (frontend_link_changed) {
             core.pending_link_value = requested_link;
             core.link_request_pending = true;
@@ -1385,6 +1670,9 @@ void retro_run(void)
         return;
     }
     update_options();
+    if (!core.session.loaded) {
+        return;
+    }
     display = current_display();
     synchronize_fastforward_policy();
     inputs[0] = read_port_input(0U, cursor_time_available,

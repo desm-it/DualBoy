@@ -3,10 +3,13 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "frontend/engine.h"
+#include "engines/melonds/egl_context.h"
 #include "engines/melonds/nds_adapter_test.h"
 #include "engines/melonds/nds_platform_bridge.hpp"
 
 #include <Args.h>
+#include <GPU_OpenGL.h>
+#include <GPU_Soft.h>
 #include <NDS.h>
 #include <NDSCart.h>
 #include <SPI_Firmware.h>
@@ -73,6 +76,23 @@ std::string g_platform_system_directory = ".";
 
 struct MelonDSPair;
 
+struct RendererWorkerTask {
+    MelonDSPair *pair = nullptr;
+    unsigned machine = 0U;
+    enum dualboy_video_renderer renderer =
+        DUALBOY_VIDEO_RENDERER_SOFTWARE;
+};
+
+static bool RunRendererWorkerTask(void *opaque_task,
+                                  char *error,
+                                  std::size_t error_size);
+static bool DestroyGLMachineWorkerTask(void *opaque_task,
+                                       char *error,
+                                       std::size_t error_size);
+static bool ReportGLContextWorkerTask(void *opaque_task,
+                                      char *error,
+                                      std::size_t error_size);
+
 enum class FrameState {
     Idle,
     Running,
@@ -87,6 +107,11 @@ struct MachineContext {
     unsigned id = 0U;
     std::unique_ptr<melonDS::NDS> nds;
     std::array<std::uint32_t, kMachinePixels> video{};
+    std::array<std::uint32_t,
+               static_cast<std::size_t>(kScreenWidth) * kScreenHeight>
+        gl_readback{};
+    std::unique_ptr<melonDS::Renderer> gl_rollback_renderer;
+    GLuint gl_readback_framebuffer = 0U;
     std::vector<std::uint8_t> save_shadow;
     std::vector<std::int16_t> audio;
     std::size_t audio_offset_frames = 0U;
@@ -101,6 +126,7 @@ struct MachineContext {
     bool last_touch_active = false;
     std::uint16_t last_touch_x = 0U;
     std::uint16_t last_touch_y = 0U;
+    bool debug_fail_next_gl_renderer = false;
 };
 
 struct MelonDSPair {
@@ -131,6 +157,33 @@ struct MelonDSPair {
     {
         ShutdownWorkers();
         SetLink(false);
+        if (gl_context.implementation != nullptr) {
+            std::array<char, 256U> error{};
+            for (unsigned machine_id = 0U; machine_id < kMachineCount;
+                 ++machine_id) {
+                if (machines[machine_id].nds == nullptr) continue;
+                RendererWorkerTask task{
+                    this, machine_id, DUALBOY_VIDEO_RENDERER_SOFTWARE};
+                bool released = dualboy_egl_context_execute(
+                    &gl_context, machine_id, RunRendererWorkerTask, &task,
+                    error.data(), error.size());
+                if (!released) {
+                    released = dualboy_egl_context_execute(
+                        &gl_context, machine_id, DestroyGLMachineWorkerTask,
+                        &task, error.data(), error.size());
+                }
+                if (!released) {
+                    /* Never invoke this machine's GLRenderer destructor on
+                     * the calling thread after its private context is gone. */
+                    MachineContext &machine = machines[machine_id];
+                    machine.gl_rollback_renderer.reset();
+                    (void)machine.nds.release();
+                    machine.gl_readback_framebuffer = 0U;
+                }
+            }
+            video_renderer = DUALBOY_VIDEO_RENDERER_SOFTWARE;
+        }
+        dualboy_egl_context_destroy(&gl_context);
         for (auto &machine : machines) {
             machine.nds.reset();
             machine.magic = 0U;
@@ -161,6 +214,11 @@ struct MelonDSPair {
     bool SetLink(bool enabled)
     {
         std::lock_guard<std::mutex> lock(mp_control_mutex);
+
+        if (enabled &&
+            video_renderer == DUALBOY_VIDEO_RENDERER_OPENGL) {
+            return false;
+        }
 
         link_enabled.store(enabled, std::memory_order_release);
         for (unsigned machine = 0U; machine < kMachineCount; ++machine) {
@@ -239,63 +297,8 @@ struct MelonDSPair {
                 }
             }
 
-            bool success = true;
             std::array<char, 256U> message{};
-            try {
-                if (abort_requested.load(std::memory_order_acquire)) {
-                    success = false;
-                    (void)std::snprintf(message.data(), message.size(), "%s",
-                                        "frame abandoned after worker deadline");
-                } else if (machine.nds == nullptr) {
-                    success = false;
-                    (void)std::snprintf(message.data(), message.size(), "%s",
-                                        "worker has no Nintendo DS instance");
-                } else {
-                    ApplyInput(machine);
-                    (void)machine.nds->RunFrame();
-                    if (abort_requested.load(std::memory_order_acquire)) {
-                        success = false;
-                        (void)std::snprintf(
-                            message.data(), message.size(), "%s",
-                            "frame abandoned after worker deadline");
-                    } else if (!SnapshotVideo(machine)) {
-                        success = false;
-                        (void)std::snprintf(
-                            message.data(), message.size(), "%s",
-                            "melonDS did not expose software framebuffers");
-                    }
-                    if (!abort_requested.load(std::memory_order_acquire)) {
-                        DrainAudio(machine);
-                        machine.completed_frames.fetch_add(
-                            1U, std::memory_order_relaxed);
-                    }
-                    if (!machine.nds->IsRunning()) {
-                        success = false;
-                        if (message[0] == '\0') {
-                            (void)std::snprintf(
-                                message.data(), message.size(), "%s",
-                                "Nintendo DS instance stopped");
-                        }
-                    }
-                }
-            } catch (const std::exception &exception) {
-                success = false;
-                (void)std::snprintf(message.data(), message.size(), "%s",
-                                    exception.what());
-            } catch (...) {
-                success = false;
-                (void)std::snprintf(
-                    message.data(), message.size(), "%s",
-                    "unknown exception in Nintendo DS frame worker");
-            }
-
-            if (!success) {
-                /* Wifi::Reset and NDS::Stop do not themselves call MP_End.
-                 * Remove a failed machine before publishing the quiescent
-                 * completion so stale LocalMP registration cannot keep the
-                 * peer or frontend fast-forward policy active. */
-                MPEnd(machine);
-            }
+            const bool success = ExecuteMachine(machine, message);
 
             {
                 std::lock_guard<std::mutex> lock(frame_mutex);
@@ -305,6 +308,62 @@ struct MelonDSPair {
             }
             done_cv.notify_one();
         }
+    }
+
+    bool ExecuteMachine(MachineContext &machine,
+                        std::array<char, 256U> &message) noexcept
+    {
+        bool success = true;
+        try {
+            if (abort_requested.load(std::memory_order_acquire)) {
+                success = false;
+                (void)std::snprintf(message.data(), message.size(), "%s",
+                                    "frame abandoned after worker deadline");
+            } else if (machine.nds == nullptr) {
+                success = false;
+                (void)std::snprintf(message.data(), message.size(), "%s",
+                                    "worker has no Nintendo DS instance");
+            } else {
+                ApplyInput(machine);
+                (void)machine.nds->RunFrame();
+                if (abort_requested.load(std::memory_order_acquire)) {
+                    success = false;
+                    (void)std::snprintf(
+                        message.data(), message.size(), "%s",
+                        "frame abandoned after worker deadline");
+                } else if (!SnapshotVideo(machine)) {
+                    success = false;
+                    (void)std::snprintf(message.data(), message.size(), "%s",
+                                        "melonDS framebuffer snapshot failed");
+                }
+                if (!abort_requested.load(std::memory_order_acquire)) {
+                    DrainAudio(machine);
+                    machine.completed_frames.fetch_add(
+                        1U, std::memory_order_relaxed);
+                }
+                if (!machine.nds->IsRunning()) {
+                    success = false;
+                    if (message[0] == '\0') {
+                        (void)std::snprintf(message.data(), message.size(), "%s",
+                                            "Nintendo DS instance stopped");
+                    }
+                }
+            }
+        } catch (const std::exception &exception) {
+            success = false;
+            (void)std::snprintf(message.data(), message.size(), "%s",
+                                exception.what());
+        } catch (...) {
+            success = false;
+            (void)std::snprintf(message.data(), message.size(), "%s",
+                                "unknown exception in Nintendo DS frame");
+        }
+
+        if (!success) {
+            /* Wifi::Reset and NDS::Stop do not themselves call MP_End. */
+            MPEnd(machine);
+        }
+        return success;
     }
 
     static void ApplyInput(MachineContext &machine)
@@ -343,6 +402,42 @@ struct MelonDSPair {
     {
         void *top = nullptr;
         void *bottom = nullptr;
+
+        if (dynamic_cast<melonDS::GLRenderer *>(
+                &machine.nds->GetRenderer()) != nullptr) {
+            (void)machine.nds->GPU.GetFramebuffers(&top, &bottom);
+            if (top == nullptr || machine.gl_readback_framebuffer == 0U) {
+                return false;
+            }
+            const GLuint texture = *static_cast<const GLuint *>(top);
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, 0U);
+            glPixelStorei(GL_PACK_ALIGNMENT, 4);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER,
+                              machine.gl_readback_framebuffer);
+            glReadBuffer(GL_COLOR_ATTACHMENT0);
+            for (unsigned screen = 0U; screen < 2U; ++screen) {
+                glFramebufferTextureLayer(GL_READ_FRAMEBUFFER,
+                                          GL_COLOR_ATTACHMENT0, texture, 0,
+                                          static_cast<GLint>(screen));
+                if (glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) !=
+                    GL_FRAMEBUFFER_COMPLETE) {
+                    return false;
+                }
+                glReadPixels(0, 0, static_cast<GLsizei>(kScreenWidth),
+                             static_cast<GLsizei>(kScreenHeight), GL_BGRA,
+                             GL_UNSIGNED_BYTE, machine.gl_readback.data());
+                for (unsigned row = 0U; row < kScreenHeight; ++row) {
+                    const auto *source = machine.gl_readback.data() +
+                        static_cast<std::ptrdiff_t>(
+                            (kScreenHeight - row - 1U) * kScreenWidth);
+                    auto *destination = machine.video.data() +
+                        static_cast<std::ptrdiff_t>(
+                            (screen * kScreenHeight + row) * kScreenWidth);
+                    std::copy_n(source, kScreenWidth, destination);
+                }
+            }
+            return glGetError() == GL_NO_ERROR;
+        }
 
         if (!machine.nds->GPU.GetFramebuffers(&top, &bottom) || top == nullptr ||
             bottom == nullptr) {
@@ -413,6 +508,12 @@ struct MelonDSPair {
     std::condition_variable state_cv;
     std::mutex mp_control_mutex;
     std::atomic<bool> link_enabled{false};
+    struct dualboy_egl_context gl_context{};
+    std::array<char, 128U> gl_vendor{};
+    std::array<char, 256U> gl_renderer_name{};
+    bool gl_software_driver = false;
+    enum dualboy_video_renderer video_renderer =
+        DUALBOY_VIDEO_RENDERER_SOFTWARE;
 };
 
 static MachineContext *ContextFromUserdata(void *userdata)
@@ -578,7 +679,420 @@ static bool SetLink(void *opaque_pair,
         SetError(error, error_size, "no melonDS pair is loaded");
         return false;
     }
-    return pair->SetLink(enabled);
+    if (!pair->SetLink(enabled)) {
+        SetError(error, error_size,
+                 "Local Link cannot be enabled while OpenGL rendering is active");
+        return false;
+    }
+    return true;
+}
+
+static bool SetRendererOnContextThread(
+    RendererWorkerTask *task,
+    char *error,
+    std::size_t error_size)
+{
+    if (task == nullptr || task->pair == nullptr ||
+        task->machine >= kMachineCount ||
+        (task->renderer != DUALBOY_VIDEO_RENDERER_SOFTWARE &&
+         task->renderer != DUALBOY_VIDEO_RENDERER_OPENGL)) {
+        SetError(error, error_size, "invalid Nintendo DS video renderer task");
+        return false;
+    }
+    MelonDSPair *pair = task->pair;
+    MachineContext &machine = pair->machines[task->machine];
+    if (machine.nds == nullptr) {
+        SetError(error, error_size, "machine %u is not loaded",
+                 task->machine + 1U);
+        return false;
+    }
+
+    if (task->renderer == DUALBOY_VIDEO_RENDERER_SOFTWARE) {
+        std::unique_ptr<melonDS::Renderer> software =
+            std::move(machine.gl_rollback_renderer);
+        try {
+            if (software == nullptr) {
+                software =
+                    std::make_unique<melonDS::SoftRenderer>(*machine.nds);
+            }
+            if (machine.gl_readback_framebuffer != 0U) {
+                glDeleteFramebuffers(1, &machine.gl_readback_framebuffer);
+                machine.gl_readback_framebuffer = 0U;
+            }
+            machine.nds->SetRenderer(std::move(software));
+        } catch (const std::exception &exception) {
+            SetError(error, error_size,
+                     "could not restore machine %u software renderer: %s",
+                     task->machine + 1U, exception.what());
+            return false;
+        } catch (...) {
+            SetError(error, error_size,
+                     "could not restore machine %u software renderer",
+                     task->machine + 1U);
+            return false;
+        }
+        return true;
+    }
+
+    if (pair->link_enabled.load(std::memory_order_acquire)) {
+        SetError(error, error_size,
+                 "OpenGL rendering requires Local Link to be disabled");
+        return false;
+    }
+    if (machine.debug_fail_next_gl_renderer) {
+        machine.debug_fail_next_gl_renderer = false;
+        SetError(error, error_size,
+                 "injected OpenGL renderer failure for machine %u",
+                 task->machine + 1U);
+        return false;
+    }
+
+    std::unique_ptr<melonDS::Renderer> rollback_renderer;
+    GLuint readback_framebuffer = 0U;
+    bool gl_installed = false;
+    try {
+        rollback_renderer =
+            std::make_unique<melonDS::SoftRenderer>(*machine.nds);
+        machine.nds->SetRenderer(
+            std::make_unique<melonDS::GLRenderer>(*machine.nds, false));
+        if (dynamic_cast<melonDS::GLRenderer *>(
+                &machine.nds->GetRenderer()) == nullptr) {
+            SetError(error, error_size,
+                     "melonDS rejected the OpenGL renderer for machine %u",
+                     task->machine + 1U);
+            goto rollback;
+        }
+        gl_installed = true;
+        melonDS::RendererSettings settings{1, false, false, false};
+        machine.nds->GetRenderer().SetRenderSettings(settings);
+        glGenFramebuffers(1, &readback_framebuffer);
+        if (readback_framebuffer == 0U || glGetError() != GL_NO_ERROR) {
+            SetError(error, error_size,
+                     "OpenGL renderer initialization failed for machine %u",
+                     task->machine + 1U);
+            goto rollback;
+        }
+        machine.gl_readback_framebuffer = readback_framebuffer;
+        machine.gl_rollback_renderer = std::move(rollback_renderer);
+        return true;
+    } catch (const std::exception &exception) {
+        SetError(error, error_size,
+                 "could not initialize machine %u OpenGL renderer: %s",
+                 task->machine + 1U, exception.what());
+    } catch (...) {
+        SetError(error, error_size,
+                 "could not initialize machine %u OpenGL renderer",
+                 task->machine + 1U);
+    }
+
+rollback:
+    if (readback_framebuffer != 0U) {
+        glDeleteFramebuffers(1, &readback_framebuffer);
+    }
+    if (gl_installed && rollback_renderer != nullptr) {
+        machine.nds->SetRenderer(std::move(rollback_renderer));
+    }
+    machine.gl_readback_framebuffer = 0U;
+    return false;
+}
+
+static bool RunRendererWorkerTask(void *opaque_task,
+                                  char *error,
+                                  std::size_t error_size)
+{
+    auto *task = static_cast<RendererWorkerTask *>(opaque_task);
+
+    try {
+        return SetRendererOnContextThread(task, error, error_size);
+    } catch (const std::exception &exception) {
+        SetError(error, error_size, "renderer worker task failed: %s",
+                 exception.what());
+    } catch (...) {
+        SetError(error, error_size, "renderer worker task failed");
+    }
+    return false;
+}
+
+static bool DestroyGLMachineWorkerTask(void *opaque_task,
+                                       char *error,
+                                       std::size_t error_size)
+{
+    auto *task = static_cast<RendererWorkerTask *>(opaque_task);
+
+    if (task == nullptr || task->pair == nullptr ||
+        task->machine >= kMachineCount) {
+        SetError(error, error_size, "invalid OpenGL machine teardown task");
+        return false;
+    }
+    try {
+        MachineContext &machine = task->pair->machines[task->machine];
+        if (machine.gl_readback_framebuffer != 0U) {
+            glDeleteFramebuffers(1, &machine.gl_readback_framebuffer);
+            machine.gl_readback_framebuffer = 0U;
+        }
+        machine.gl_rollback_renderer.reset();
+        machine.nds.reset();
+    } catch (const std::exception &exception) {
+        SetError(error, error_size,
+                 "could not destroy OpenGL machine %u on its worker: %s",
+                 task->machine + 1U, exception.what());
+        return false;
+    } catch (...) {
+        SetError(error, error_size,
+                 "could not destroy OpenGL machine %u on its worker",
+                 task->machine + 1U);
+        return false;
+    }
+    return true;
+}
+
+static bool ReportGLContextWorkerTask(void *opaque_task,
+                                      char *error,
+                                      std::size_t error_size)
+{
+    auto *task = static_cast<RendererWorkerTask *>(opaque_task);
+
+    if (task == nullptr || task->pair == nullptr) {
+        SetError(error, error_size, "invalid OpenGL reporting task");
+        return false;
+    }
+    try {
+        const char *vendor = reinterpret_cast<const char *>(
+            glGetString(GL_VENDOR));
+        const char *renderer = reinterpret_cast<const char *>(
+            glGetString(GL_RENDERER));
+        if (vendor == nullptr || renderer == nullptr) {
+            SetError(error, error_size,
+                     "offscreen OpenGL driver identity is unavailable");
+            return false;
+        }
+        (void)std::snprintf(task->pair->gl_vendor.data(),
+                            task->pair->gl_vendor.size(), "%s", vendor);
+        (void)std::snprintf(task->pair->gl_renderer_name.data(),
+                            task->pair->gl_renderer_name.size(), "%s",
+                            renderer);
+        task->pair->gl_software_driver =
+            std::strstr(renderer, "llvmpipe") != nullptr ||
+            std::strstr(renderer, "softpipe") != nullptr ||
+            std::strstr(renderer, "swrast") != nullptr;
+    } catch (const std::exception &exception) {
+        SetError(error, error_size, "OpenGL reporting failed: %s",
+                 exception.what());
+        return false;
+    } catch (...) {
+        SetError(error, error_size, "OpenGL reporting failed");
+        return false;
+    }
+    return true;
+}
+
+/* A renderer transition failure is recoverable only when the machine can be
+ * put back on software while its private context is current. If that fails,
+ * destroy the whole machine on the EGL worker. As a last-resort safety valve,
+ * leak only that machine: invoking an unknown GLRenderer destructor after the
+ * context is gone could issue GL commands against unrelated process state. */
+static bool RestoreSoftwareOrTerminalize(MelonDSPair *pair,
+                                         unsigned machine_id,
+                                         char *error,
+                                         std::size_t error_size)
+{
+    RendererWorkerTask task{
+        pair, machine_id, DUALBOY_VIDEO_RENDERER_SOFTWARE};
+    if (dualboy_egl_context_execute(
+            &pair->gl_context, machine_id, RunRendererWorkerTask, &task,
+            error, error_size)) {
+        return true;
+    }
+    if (dualboy_egl_context_execute(
+            &pair->gl_context, machine_id, DestroyGLMachineWorkerTask, &task,
+            error, error_size)) {
+        return false;
+    }
+
+    MachineContext &machine = pair->machines[machine_id];
+    machine.gl_rollback_renderer.reset();
+    (void)machine.nds.release();
+    machine.gl_readback_framebuffer = 0U;
+    return false;
+}
+
+static void PoisonRendererPair(MelonDSPair *pair)
+{
+    pair->frame_state = FrameState::Poisoned;
+    pair->abort_requested.store(true, std::memory_order_release);
+    pair->state_cv.notify_all();
+    /* Expose a non-software state to the Libretro owner so a failed activation
+     * cannot be mistaken for the ordinary unavailable-EGL fallback. */
+    pair->video_renderer = DUALBOY_VIDEO_RENDERER_OPENGL;
+}
+
+static bool SetVideoRenderer(void *opaque_pair,
+                             enum dualboy_video_renderer renderer,
+                             char *error,
+                             std::size_t error_size)
+{
+    MelonDSPair *pair = AsPair(opaque_pair);
+    if (pair == nullptr ||
+        (renderer != DUALBOY_VIDEO_RENDERER_SOFTWARE &&
+         renderer != DUALBOY_VIDEO_RENDERER_OPENGL)) {
+        SetError(error, error_size, "invalid Nintendo DS video renderer");
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(pair->frame_mutex);
+    if (pair->frame_state != FrameState::Idle) {
+        SetError(error, error_size,
+                 "cannot change Nintendo DS renderer during a frame");
+        return false;
+    }
+    if (renderer == pair->video_renderer) return true;
+
+    if (renderer == DUALBOY_VIDEO_RENDERER_OPENGL) {
+        if (pair->link_enabled.load(std::memory_order_acquire)) {
+            SetError(error, error_size,
+                     "OpenGL rendering requires Local Link to be disabled");
+            return false;
+        }
+        if (!dualboy_egl_context_create(&pair->gl_context, error,
+                                        error_size)) {
+            return false;
+        }
+        {
+            RendererWorkerTask report{
+                pair, 0U, DUALBOY_VIDEO_RENDERER_OPENGL};
+            if (!dualboy_egl_context_execute(
+                    &pair->gl_context, 0U, ReportGLContextWorkerTask, &report,
+                    error, error_size)) {
+                dualboy_egl_context_destroy(&pair->gl_context);
+                return false;
+            }
+            if (pair->config.log != nullptr) {
+                std::array<char, 512U> message{};
+                (void)std::snprintf(
+                    message.data(), message.size(),
+                    "melonDS offscreen OpenGL: vendor=%s renderer=%s%s",
+                    pair->gl_vendor.data(), pair->gl_renderer_name.data(),
+                    pair->gl_software_driver
+                        ? " (software rasterizer; no GPU acceleration)"
+                        : "");
+                pair->config.log(
+                    pair->config.log_context,
+                    pair->gl_software_driver ? DUALBOY_LOG_WARN
+                                             : DUALBOY_LOG_INFO,
+                    message.data());
+            }
+        }
+        for (unsigned machine = 0U; machine < kMachineCount; ++machine) {
+            RendererWorkerTask task{pair, machine, renderer};
+            if (!dualboy_egl_context_execute(
+                    &pair->gl_context, machine, RunRendererWorkerTask, &task,
+                    error, error_size)) {
+                char rollback_error[256] = {0};
+                bool pair_valid = true;
+                for (unsigned rollback_machine = 0U;
+                     rollback_machine <= machine; ++rollback_machine) {
+                    if (!RestoreSoftwareOrTerminalize(
+                            pair, rollback_machine, rollback_error,
+                            sizeof(rollback_error))) {
+                        pair_valid = false;
+                    }
+                }
+                dualboy_egl_context_destroy(&pair->gl_context);
+                if (!pair_valid) {
+                    PoisonRendererPair(pair);
+                    SetError(error, error_size,
+                             "OpenGL activation failed and the Nintendo DS pair "
+                             "could not be restored safely");
+                }
+                return false;
+            }
+        }
+        pair->video_renderer = renderer;
+        return true;
+    }
+
+    std::array<bool, kMachineCount> restored{};
+    bool transition_failed = false;
+    for (unsigned machine = 0U; machine < kMachineCount; ++machine) {
+        RendererWorkerTask task{pair, machine, renderer};
+        if (!dualboy_egl_context_execute(
+                &pair->gl_context, machine, RunRendererWorkerTask, &task,
+                error, error_size)) {
+            transition_failed = true;
+            break;
+        }
+        restored[machine] = true;
+    }
+    bool pair_valid = true;
+    if (transition_failed) {
+        char cleanup_error[256] = {0};
+        for (unsigned machine = 0U; machine < kMachineCount; ++machine) {
+            if (restored[machine]) continue;
+            if (!RestoreSoftwareOrTerminalize(
+                    pair, machine, cleanup_error, sizeof(cleanup_error))) {
+                pair_valid = false;
+            }
+        }
+    }
+    dualboy_egl_context_destroy(&pair->gl_context);
+    if (!pair_valid) {
+        PoisonRendererPair(pair);
+        SetError(error, error_size,
+                 "OpenGL teardown failed and the Nintendo DS pair was retired");
+        return false;
+    }
+    pair->video_renderer = renderer;
+    return true;
+}
+
+static enum dualboy_video_renderer VideoRenderer(const void *opaque_pair)
+{
+    const MelonDSPair *pair = AsPair(opaque_pair);
+    return pair != nullptr ? pair->video_renderer
+                           : DUALBOY_VIDEO_RENDERER_SOFTWARE;
+}
+
+static void ResetMachine(MelonDSPair *pair, unsigned machine_id)
+{
+    MachineContext &machine = pair->machines[machine_id];
+    if (machine.nds == nullptr) return;
+    machine.nds->Reset();
+    if (machine.nds->NeedsDirectBoot()) {
+        machine.nds->SetupDirectBoot(machine.rom_name);
+    }
+    machine.nds->Start();
+    if (!machine.save_shadow.empty()) {
+        machine.save_dirty.store(false, std::memory_order_release);
+        machine.nds->SetNDSSave(machine.save_shadow.data(),
+                                static_cast<std::uint32_t>(
+                                    machine.save_shadow.size()));
+        machine.save_dirty.store(false, std::memory_order_release);
+    }
+    machine.stop_reason.store(-1, std::memory_order_release);
+}
+
+static bool ResetGLMachineWorkerTask(void *opaque_task,
+                                     char *error,
+                                     std::size_t error_size)
+{
+    auto *task = static_cast<RendererWorkerTask *>(opaque_task);
+
+    if (task == nullptr || task->pair == nullptr ||
+        task->machine >= kMachineCount) {
+        SetError(error, error_size, "invalid Nintendo DS reset task");
+        return false;
+    }
+    try {
+        ResetMachine(task->pair, task->machine);
+    } catch (const std::exception &exception) {
+        SetError(error, error_size,
+                 "Nintendo DS OpenGL reset failed: %s", exception.what());
+        return false;
+    } catch (...) {
+        SetError(error, error_size, "Nintendo DS OpenGL reset failed");
+        return false;
+    }
+    return true;
 }
 
 static void Reset(void *opaque_pair)
@@ -588,27 +1102,36 @@ static void Reset(void *opaque_pair)
     std::lock_guard<std::mutex> lock(pair->frame_mutex);
     if (pair->frame_state != FrameState::Idle) return;
 
-    /* melonDS resets Wifi::PowerOn directly without emitting MP_End. Clear
-     * both upstream registrations and their request state before resetting so
-     * a later guest power-on starts from fresh LocalMP read offsets/queues. */
+    /* Wifi::Reset and NDS::Stop do not themselves emit MP_End. Clear both
+     * registrations before resetting either machine. */
     for (MachineContext &machine : pair->machines) {
         pair->MPEnd(machine);
     }
-    for (MachineContext &machine : pair->machines) {
-        if (machine.nds == nullptr) continue;
-        machine.nds->Reset();
-        if (machine.nds->NeedsDirectBoot()) {
-            machine.nds->SetupDirectBoot(machine.rom_name);
+    if (pair->video_renderer == DUALBOY_VIDEO_RENDERER_OPENGL) {
+        std::array<char, 256U> error{};
+        for (unsigned machine = 0U; machine < kMachineCount; ++machine) {
+            RendererWorkerTask task{
+                pair, machine, DUALBOY_VIDEO_RENDERER_OPENGL};
+            if (!dualboy_egl_context_execute(
+                    &pair->gl_context, machine, ResetGLMachineWorkerTask,
+                    &task, error.data(), error.size())) {
+                pair->abort_requested.store(true, std::memory_order_release);
+                pair->frame_state = FrameState::Poisoned;
+                pair->state_cv.notify_all();
+                if (pair->config.log != nullptr) {
+                    pair->config.log(
+                        pair->config.log_context, DUALBOY_LOG_ERROR,
+                        error[0] != '\0'
+                            ? error.data()
+                            : "Nintendo DS OpenGL reset failed; pair retired");
+                }
+                break;
+            }
         }
-        machine.nds->Start();
-        if (!machine.save_shadow.empty()) {
-            machine.save_dirty.store(false, std::memory_order_release);
-            machine.nds->SetNDSSave(machine.save_shadow.data(),
-                                    static_cast<std::uint32_t>(
-                                        machine.save_shadow.size()));
-            machine.save_dirty.store(false, std::memory_order_release);
-        }
-        machine.stop_reason.store(-1, std::memory_order_release);
+        return;
+    }
+    for (unsigned machine = 0U; machine < kMachineCount; ++machine) {
+        ResetMachine(pair, machine);
     }
 }
 
@@ -681,6 +1204,38 @@ static void SetMachineInput(void *opaque_pair,
     pair->machines[machine].input = *input;
 }
 
+static bool RunGLMachineWorkerTask(void *opaque_task,
+                                   char *error,
+                                   std::size_t error_size)
+{
+    auto *task = static_cast<RendererWorkerTask *>(opaque_task);
+
+    if (task == nullptr || task->pair == nullptr ||
+        task->machine >= kMachineCount) {
+        SetError(error, error_size, "invalid OpenGL frame task");
+        return false;
+    }
+    try {
+        MachineContext &machine = task->pair->machines[task->machine];
+        std::array<char, 256U> message{};
+        if (!task->pair->ExecuteMachine(machine, message)) {
+            SetError(error, error_size, "machine %u frame failed: %s",
+                     machine.id + 1U,
+                     message[0] != '\0' ? message.data()
+                                         : "unknown OpenGL frame error");
+            return false;
+        }
+    } catch (const std::exception &exception) {
+        SetError(error, error_size, "OpenGL worker frame failed: %s",
+                 exception.what());
+        return false;
+    } catch (...) {
+        SetError(error, error_size, "OpenGL worker frame failed");
+        return false;
+    }
+    return true;
+}
+
 static bool RunFrame(void *opaque_pair, char *error, std::size_t error_size)
 {
     MelonDSPair *pair = AsPair(opaque_pair);
@@ -696,7 +1251,8 @@ static bool RunFrame(void *opaque_pair, char *error, std::size_t error_size)
         std::lock_guard<std::mutex> lock(pair->frame_mutex);
         if (pair->frame_state == FrameState::Poisoned) {
             SetError(error, error_size,
-                     "Nintendo DS workers are unavailable after a frame timeout");
+                     "Nintendo DS pair is unavailable after an earlier "
+                     "frame, reset, or renderer failure");
             return false;
         }
         if (pair->frame_state != FrameState::Idle) {
@@ -721,6 +1277,58 @@ static bool RunFrame(void *opaque_pair, char *error, std::size_t error_size)
                      machine.id + 1U);
             return false;
         }
+    }
+
+    if (pair->video_renderer == DUALBOY_VIDEO_RENDERER_OPENGL) {
+        const auto frame_started = std::chrono::steady_clock::now();
+        if (pair->link_enabled.load(std::memory_order_acquire)) {
+            SetError(error, error_size,
+                     "Local Link cannot run with the OpenGL renderer");
+            return false;
+        }
+        {
+            std::lock_guard<std::mutex> lock(pair->frame_mutex);
+            pair->abort_requested.store(false, std::memory_order_release);
+            pair->frame_state = FrameState::Running;
+        }
+        bool success = true;
+        for (unsigned machine = 0U; machine < kMachineCount; ++machine) {
+            RendererWorkerTask task{
+                pair, machine, DUALBOY_VIDEO_RENDERER_OPENGL};
+            if (!dualboy_egl_context_execute(
+                    &pair->gl_context, machine, RunGLMachineWorkerTask, &task,
+                    error, error_size)) {
+                success = false;
+                break;
+            }
+            if (std::chrono::steady_clock::now() - frame_started > deadline) {
+                deadline_exceeded = true;
+                pair->abort_requested.store(true, std::memory_order_release);
+                break;
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(pair->frame_mutex);
+            pair->frame_state =
+                (!success || deadline_exceeded) ? FrameState::Poisoned
+                                                : FrameState::Idle;
+            pair->state_cv.notify_all();
+        }
+        if (deadline_exceeded) {
+            pair->machines[0].audio.clear();
+            pair->machines[0].audio_offset_frames = 0U;
+            SetError(error, error_size,
+                     "Nintendo DS OpenGL frame exceeded the %lld ms worker deadline; "
+                     "the pair is now unusable",
+                     static_cast<long long>(deadline.count()));
+            return false;
+        }
+        if (!success) {
+            pair->abort_requested.store(true, std::memory_order_release);
+            pair->machines[0].audio.clear();
+            pair->machines[0].audio_offset_frames = 0U;
+        }
+        return success;
     }
 
     {
@@ -1254,6 +1862,8 @@ extern "C" const struct dualboy_engine_ops *dualboy_melonds_engine(void)
         value.serialize_link = nullptr;
         value.unserialize_link = nullptr;
         value.link_transport_active = LinkTransportActive;
+        value.set_video_renderer = SetVideoRenderer;
+        value.video_renderer = VideoRenderer;
         value.destroy_pair = DestroyPair;
         value.persistent_memory_loaded = PersistentMemoryLoaded;
         return value;
@@ -1466,6 +2076,46 @@ extern "C" bool dualboy_melonds_debug_set_frame_deadline_ms(
     if (pair->frame_state != FrameState::Idle) return false;
     pair->frame_deadline = std::chrono::milliseconds(milliseconds);
     return true;
+}
+
+extern "C" bool dualboy_melonds_debug_fail_next_gl_renderer(
+    void *opaque_pair, unsigned machine)
+{
+    MelonDSPair *pair = AsPair(opaque_pair);
+    if (pair == nullptr || machine >= kMachineCount) return false;
+    std::lock_guard<std::mutex> lock(pair->frame_mutex);
+    if (pair->frame_state != FrameState::Idle ||
+        pair->video_renderer != DUALBOY_VIDEO_RENDERER_SOFTWARE) {
+        return false;
+    }
+    pair->machines[machine].debug_fail_next_gl_renderer = true;
+    return true;
+}
+
+extern "C" bool dualboy_melonds_debug_uses_opengl(const void *opaque_pair)
+{
+    const MelonDSPair *pair = AsPair(opaque_pair);
+    if (pair == nullptr) return false;
+    std::lock_guard<std::mutex> lock(pair->frame_mutex);
+    if (pair->frame_state != FrameState::Idle ||
+        pair->video_renderer != DUALBOY_VIDEO_RENDERER_OPENGL) {
+        return false;
+    }
+    for (const MachineContext &machine : pair->machines) {
+        if (machine.nds == nullptr ||
+            dynamic_cast<const melonDS::GLRenderer *>(
+                &machine.nds->GetRenderer()) == nullptr) {
+            return false;
+        }
+    }
+    return true;
+}
+
+extern "C" bool dualboy_melonds_debug_link_enabled(const void *opaque_pair)
+{
+    const MelonDSPair *pair = AsPair(opaque_pair);
+    return pair != nullptr &&
+           pair->link_enabled.load(std::memory_order_acquire);
 }
 
 extern "C" bool dualboy_melonds_debug_hold_next_frame(void *opaque_pair,

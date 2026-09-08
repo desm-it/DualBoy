@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 project(DualBoy VERSION 0.1.0 LANGUAGES C CXX)
 
 include(CTest)
+find_package(Threads REQUIRED)
 
 option(DUALBOY_WARNINGS_AS_ERRORS "Treat DualBoy warnings as errors" ON)
 option(DUALBOY_ENABLE_ASAN "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
@@ -150,7 +151,7 @@ endif()
 # a separate private archive.
 set(BUILD_QT_SDL OFF CACHE BOOL "Build melonDS Qt/SDL frontend" FORCE)
 set(ENABLE_GDBSTUB OFF CACHE BOOL "Enable melonDS GDB stub" FORCE)
-set(ENABLE_OGLRENDERER OFF CACHE BOOL "Enable melonDS OpenGL renderer" FORCE)
+set(ENABLE_OGLRENDERER ON CACHE BOOL "Enable melonDS OpenGL renderer" FORCE)
 set(ENABLE_JIT OFF CACHE BOOL "Enable melonDS JIT" FORCE)
 set(ENABLE_LTO_RELEASE OFF CACHE BOOL "Enable melonDS release LTO" FORCE)
 set(MELONDS_EMBED_BUILD_INFO OFF CACHE BOOL "Embed melonDS build info" FORCE)
@@ -160,8 +161,65 @@ add_subdirectory(
     EXCLUDE_FROM_ALL
 )
 
+# The pinned melonDS GLRenderer2D destructor omits its two CPU-side vertex
+# arrays. Keep the submodule byte-clean while compiling a hash/anchor-verified
+# build-tree adaptation that initializes and releases those arrays. Remove this
+# boundary after the equivalent fix is audited in a future upstream pin.
+set(DUALBOY_MELONDS_GPU2D_OPENGL_SOURCE
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/melonDS/src/GPU2D_OpenGL.cpp"
+)
+set(DUALBOY_MELONDS_GPU2D_OPENGL_ADAPTED
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/melonds/GPU2D_OpenGL.cpp"
+)
+set(DUALBOY_MELONDS_GPU2D_OPENGL_ADAPTER
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/engines/melonds/adapt_gpu2d_opengl.cmake"
+)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${DUALBOY_MELONDS_GPU2D_OPENGL_SOURCE}"
+    "${DUALBOY_MELONDS_GPU2D_OPENGL_ADAPTER}"
+)
+execute_process(
+    COMMAND "${CMAKE_COMMAND}"
+        "-DINPUT=${DUALBOY_MELONDS_GPU2D_OPENGL_SOURCE}"
+        "-DOUTPUT=${DUALBOY_MELONDS_GPU2D_OPENGL_ADAPTED}"
+        -P "${DUALBOY_MELONDS_GPU2D_OPENGL_ADAPTER}"
+    RESULT_VARIABLE DUALBOY_MELONDS_GPU2D_OPENGL_ADAPT_RESULT
+    ERROR_VARIABLE DUALBOY_MELONDS_GPU2D_OPENGL_ADAPT_ERROR
+)
+if(NOT DUALBOY_MELONDS_GPU2D_OPENGL_ADAPT_RESULT EQUAL 0)
+    message(FATAL_ERROR
+        "Could not adapt pinned melonDS GPU2D_OpenGL.cpp:\n"
+        "${DUALBOY_MELONDS_GPU2D_OPENGL_ADAPT_ERROR}"
+    )
+endif()
+set_source_files_properties(
+    "${DUALBOY_MELONDS_GPU2D_OPENGL_SOURCE}"
+    TARGET_DIRECTORY core
+    PROPERTIES HEADER_FILE_ONLY TRUE
+)
+target_sources(core PRIVATE "${DUALBOY_MELONDS_GPU2D_OPENGL_ADAPTED}")
+target_include_directories(core PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/melonDS/src"
+)
+
 add_library(dualboy_melonds_localmp_upstream STATIC
     third_party/melonDS/src/net/LocalMP.cpp
+)
+
+# melonDS normally compiles its generated GLAD loader in the desktop frontend.
+# DualBoy has no upstream frontend, so compile that untouched source privately;
+# DualBoy's Linux EGL worker resolves it from a private offscreen context.
+add_library(dualboy_melonds_glad_upstream STATIC
+    third_party/melonDS/src/frontend/glad/glad.c
+)
+target_include_directories(dualboy_melonds_glad_upstream SYSTEM PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/melonDS/src
+)
+target_compile_definitions(core PUBLIC
+    MELONDS_GL_HEADER=\"frontend/glad/glad.h\"
+)
+set_target_properties(dualboy_melonds_glad_upstream PROPERTIES
+    C_VISIBILITY_PRESET hidden
 )
 target_include_directories(dualboy_melonds_localmp_upstream SYSTEM PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/melonDS/src
@@ -170,6 +228,7 @@ target_include_directories(dualboy_melonds_localmp_upstream SYSTEM PUBLIC
 
 add_library(dualboy_melonds_adapter STATIC
     src/engines/melonds/nds_adapter.cpp
+    src/engines/melonds/egl_context.c
 )
 target_include_directories(dualboy_melonds_adapter PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -181,7 +240,10 @@ target_include_directories(dualboy_melonds_adapter SYSTEM PRIVATE
 target_link_libraries(dualboy_melonds_adapter PUBLIC
     core
     dualboy_melonds_localmp_upstream
+    dualboy_melonds_glad_upstream
     dualboy_melonds_platform
+    Threads::Threads
+    ${CMAKE_DL_LIBS}
 )
 set_target_properties(dualboy_melonds_adapter PROPERTIES
     CXX_VISIBILITY_PRESET hidden
@@ -368,7 +430,7 @@ if(BUILD_TESTING)
         endif()
     endif()
     add_test(NAME melonds_adapter_unit COMMAND melonds_adapter_test)
-    set_tests_properties(melonds_adapter_unit PROPERTIES TIMEOUT 60)
+    set_tests_properties(melonds_adapter_unit PROPERTIES TIMEOUT 300)
 
     add_executable(libretro_smoke tests/libretro_smoke.c)
     target_include_directories(libretro_smoke PRIVATE
@@ -384,7 +446,7 @@ if(BUILD_TESTING)
     add_test(NAME libretro_abi_smoke
         COMMAND libretro_smoke $<TARGET_FILE:dualboy_libretro>
     )
-    set_tests_properties(libretro_abi_smoke PROPERTIES TIMEOUT 60)
+    set_tests_properties(libretro_abi_smoke PROPERTIES TIMEOUT 120)
 
     # Compile the same Libretro entrypoint into a private executable so tests
     # can inspect the real pair after public retro_run() without adding any
@@ -407,7 +469,6 @@ if(BUILD_TESTING)
         dualboy_sameboy_adapter
         dualboy_mgba_adapter
         dualboy_melonds_adapter
-        ${CMAKE_DL_LIBS}
     )
     if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
         target_compile_options(libretro_nds_pointer_test PRIVATE
@@ -420,7 +481,7 @@ if(BUILD_TESTING)
     add_test(NAME libretro_nds_pointer_integration
         COMMAND libretro_nds_pointer_test
     )
-    set_tests_properties(libretro_nds_pointer_integration PROPERTIES TIMEOUT 60)
+    set_tests_properties(libretro_nds_pointer_integration PROPERTIES TIMEOUT 300)
 endif()
 
 install(TARGETS dualboy_libretro LIBRARY DESTINATION lib/libretro)
@@ -457,4 +518,15 @@ install(FILES third_party/melonDS/src/blip-buf/license.txt
 install(FILES third_party/melonDS/src/tiny-AES-c/unlicense.txt
     DESTINATION share/doc/dualboy/licenses
     RENAME tiny-AES-c-Unlicense.txt
+)
+install(FILES third_party/melonDS/src/frontend/glad/khrplatform.h
+    DESTINATION share/doc/dualboy/licenses
+    RENAME Khronos-khrplatform.txt
+)
+install(FILES licenses/GLAD-generated-code.txt
+    DESTINATION share/doc/dualboy/licenses
+)
+install(FILES licenses/Apache-2.0.txt
+    DESTINATION share/doc/dualboy/licenses
+    RENAME Khronos-Apache-2.0.txt
 )

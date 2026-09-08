@@ -123,6 +123,7 @@ struct frontend_fixture {
     const struct retro_core_options_v2 *options_v2;
     const char *mode;
     const char *layout;
+    const char *nds_renderer;
     const char *link;
     const char *swap;
     const char *audio_source;
@@ -157,6 +158,9 @@ struct frontend_fixture {
     unsigned pointer_input_calls;
     unsigned perf_interface_calls;
     unsigned fastforward_override_calls;
+    unsigned set_variable_calls;
+    unsigned hw_render_calls;
+    enum retro_hw_context_type requested_hw_context;
     struct retro_fastforwarding_override fastforward_override;
     unsigned log_calls;
     unsigned error_log_calls;
@@ -311,6 +315,9 @@ static const char *option_value(const char *key)
     if (strcmp(key, "dualboy_layout") == 0) {
         return frontend.layout;
     }
+    if (strcmp(key, "dualboy_nds_renderer") == 0) {
+        return frontend.nds_renderer;
+    }
     if (strcmp(key, "dualboy_link") == 0) {
         return frontend.link;
     }
@@ -401,6 +408,35 @@ static bool RETRO_CALLCONV environment_callback(unsigned command, void *data)
             *(bool *)data = frontend.option_updated;
             frontend.option_updated = false;
             return true;
+        case RETRO_ENVIRONMENT_SET_VARIABLE:
+            if (data == NULL) return false;
+            {
+                const struct retro_variable *variable =
+                    (const struct retro_variable *)data;
+                if (variable->key == NULL || variable->value == NULL) {
+                    return false;
+                }
+                if (strcmp(variable->key, "dualboy_link") == 0) {
+                    frontend.link = variable->value;
+                } else if (strcmp(variable->key,
+                                  "dualboy_nds_renderer") == 0) {
+                    frontend.nds_renderer = variable->value;
+                } else {
+                    return false;
+                }
+                ++frontend.set_variable_calls;
+                frontend.option_updated = true;
+                return true;
+            }
+        case RETRO_ENVIRONMENT_SET_HW_RENDER:
+            if (data == NULL) return false;
+            frontend.requested_hw_context =
+                ((const struct retro_hw_render_callback *)data)->context_type;
+            ++frontend.hw_render_calls;
+            /* The deterministic smoke frontend has no graphics context. */
+            return frontend.requested_hw_context == RETRO_HW_CONTEXT_NONE;
+        case RETRO_ENVIRONMENT_SET_MESSAGE:
+            return data != NULL;
         case RETRO_ENVIRONMENT_GET_LOG_INTERFACE:
             if (data == NULL) {
                 return false;
@@ -614,6 +650,7 @@ static void set_default_options(void)
 {
     frontend.mode = "dual";
     frontend.layout = "side_by_side";
+    frontend.nds_renderer = "software";
     frontend.link = "enabled";
     frontend.swap = "disabled";
     frontend.audio_source = "player1";
@@ -883,11 +920,13 @@ static bool make_test_gba_rom(uint8_t *rom)
 static bool validate_registration(const struct core_api *api)
 {
     static const char *const option_keys[] = {
-        "dualboy_mode", "dualboy_layout", "dualboy_link",
+        "dualboy_mode", "dualboy_layout", "dualboy_nds_renderer",
+        "dualboy_link",
         "dualboy_swap_players", "dualboy_audio_source",
     };
     static const char *const option_defaults[] = {
-        "dual", "side_by_side", "enabled", "disabled", "player1",
+        "dual", "side_by_side", "software", "enabled", "disabled",
+        "player1",
     };
     struct retro_system_info info;
     struct retro_system_av_info av;
@@ -976,7 +1015,7 @@ static bool validate_registration(const struct core_api *api)
         ++category_count;
     }
     REQUIRE(category_count == 3U);
-    for (index = 0U; index < 5U; ++index) {
+    for (index = 0U; index < 6U; ++index) {
         const struct retro_core_option_v2_definition *definition =
             &frontend.options_v2->definitions[index];
 
@@ -986,10 +1025,10 @@ static bool validate_registration(const struct core_api *api)
         REQUIRE(strcmp(definition->default_value, option_defaults[index]) == 0);
         REQUIRE(definition->values[0].value != NULL);
     }
-    REQUIRE(frontend.options_v2->definitions[5].key == NULL);
-    REQUIRE(strcmp(frontend.options_v2->definitions[2].desc, "Local Link") ==
+    REQUIRE(frontend.options_v2->definitions[6].key == NULL);
+    REQUIRE(strcmp(frontend.options_v2->definitions[3].desc, "Local Link") ==
             0);
-    REQUIRE(strstr(frontend.options_v2->definitions[2].info,
+    REQUIRE(strstr(frontend.options_v2->definitions[3].info,
                    "local wireless") != NULL);
     REQUIRE(api->get_region() == RETRO_REGION_NTSC);
     return true;
@@ -1375,6 +1414,8 @@ static bool test_nds_load_paths(struct core_api *api,
     struct retro_game_info playlist_game;
     int playlist_length;
     unsigned geometry_calls;
+    unsigned hw_render_calls;
+    unsigned set_variable_calls;
 
     set_default_options();
     reset_observations();
@@ -1528,7 +1569,121 @@ static bool test_nds_load_paths(struct core_api *api,
 #endif
     frontend.input_masks[0] = 0U;
     frontend.video_probe_enabled = false;
+
+#if defined(DUALBOY_INTERNAL_TEST)
+    if (getenv("DUALBOY_REQUIRE_OPENGL") != NULL) {
+        void *pair_handle = dualboy_libretro_debug_engine_pair();
+
+        REQUIRE(pair_handle != NULL);
+        REQUIRE(dualboy_melonds_debug_set_frame_deadline_ms(pair_handle,
+                                                            UINT32_C(120000)));
+        REQUIRE(!dualboy_melonds_debug_uses_opengl(pair_handle));
+        REQUIRE(dualboy_melonds_debug_link_enabled(pair_handle));
+
+        /* Renderer was the last option changed: live OpenGL activation wins
+         * and transactionally disables LocalMP. */
+        frontend.nds_renderer = "opengl";
+        frontend.option_updated = true;
+        api->run();
+        REQUIRE(strcmp(frontend.nds_renderer, "opengl") == 0);
+        REQUIRE(strcmp(frontend.link, "disabled") == 0);
+        REQUIRE(dualboy_melonds_debug_uses_opengl(pair_handle));
+        REQUIRE(!dualboy_melonds_debug_link_enabled(pair_handle));
+
+        /* Turning OpenGL off does not implicitly turn LocalMP back on: both
+         * features can remain disabled. */
+        frontend.nds_renderer = "software";
+        frontend.option_updated = true;
+        api->run();
+        REQUIRE(strcmp(frontend.link, "disabled") == 0);
+        REQUIRE(!dualboy_melonds_debug_uses_opengl(pair_handle));
+        REQUIRE(!dualboy_melonds_debug_link_enabled(pair_handle));
+
+        frontend.nds_renderer = "opengl";
+        frontend.option_updated = true;
+        api->run();
+        REQUIRE(dualboy_melonds_debug_uses_opengl(pair_handle));
+
+        /* LocalMP was the last option changed: it wins by first restoring
+         * software rendering and then enabling the transport. */
+        frontend.link = "enabled";
+        frontend.option_updated = true;
+        api->run();
+        REQUIRE(strcmp(frontend.nds_renderer, "software") == 0);
+        REQUIRE(strcmp(frontend.link, "enabled") == 0);
+        REQUIRE(!dualboy_melonds_debug_uses_opengl(pair_handle));
+        REQUIRE(dualboy_melonds_debug_link_enabled(pair_handle));
+
+        frontend.nds_renderer = "opengl";
+        frontend.option_updated = true;
+        api->run();
+        REQUIRE(strcmp(frontend.nds_renderer, "opengl") == 0);
+        REQUIRE(strcmp(frontend.link, "disabled") == 0);
+        REQUIRE(dualboy_melonds_debug_uses_opengl(pair_handle));
+        REQUIRE(!dualboy_melonds_debug_link_enabled(pair_handle));
+    }
+#endif
     api->unload_game();
+
+    /* OpenGL wins an invalid persisted OpenGL+LocalMP combination. melonDS
+     * uses an adapter-owned offscreen context and must never request or disturb
+     * a Libretro hardware context. Systems without EGL/OpenGL 3.2 safely force
+     * the visible renderer back to software. */
+    set_default_options();
+    frontend.nds_renderer = "opengl";
+    hw_render_calls = frontend.hw_render_calls;
+    set_variable_calls = frontend.set_variable_calls;
+    reset_observations();
+    REQUIRE(api->load_game(&normal));
+    REQUIRE(frontend.hw_render_calls == hw_render_calls);
+    REQUIRE(strcmp(frontend.link, "disabled") == 0);
+    if (getenv("DUALBOY_REQUIRE_OPENGL") != NULL) {
+        REQUIRE(strcmp(frontend.nds_renderer, "opengl") == 0);
+    } else {
+        REQUIRE(strcmp(frontend.nds_renderer, "opengl") == 0 ||
+                strcmp(frontend.nds_renderer, "software") == 0);
+    }
+    if (strcmp(frontend.nds_renderer, "opengl") == 0) {
+        REQUIRE(frontend.set_variable_calls >= set_variable_calls + 1U);
+    } else {
+        REQUIRE(frontend.set_variable_calls >= set_variable_calls + 2U);
+    }
+#if defined(DUALBOY_INTERNAL_TEST)
+    {
+        void *pair_handle = dualboy_libretro_debug_engine_pair();
+        REQUIRE(pair_handle != NULL);
+        REQUIRE(dualboy_melonds_debug_set_frame_deadline_ms(
+            pair_handle, UINT32_C(120000)));
+    }
+#else
+    /* The dynamically loaded ABI smoke keeps the production 10 s deadline.
+     * Under QEMU+llvmpipe the initial GL JIT can exceed it, so exercise the
+     * live GL-to-software transition here. The internal generated-ROM test
+     * below runs and reads back actual GL frames with its test-only deadline. */
+    if (strcmp(frontend.nds_renderer, "opengl") == 0) {
+        frontend.nds_renderer = "software";
+        frontend.option_updated = true;
+    }
+#endif
+    api->run();
+    REQUIRE(frontend.video_calls == 1U && frontend.video_contract_ok);
+    api->reset();
+    api->run();
+    REQUIRE(frontend.video_calls == 2U && frontend.video_contract_ok);
+    api->unload_game();
+#if defined(DUALBOY_INTERNAL_TEST)
+    if (getenv("DUALBOY_REQUIRE_OPENGL") != NULL) {
+        reset_observations();
+        REQUIRE(api->load_game(&normal));
+        REQUIRE(strcmp(frontend.nds_renderer, "opengl") == 0);
+        REQUIRE(strcmp(frontend.link, "disabled") == 0);
+        REQUIRE(dualboy_melonds_debug_set_frame_deadline_ms(
+            dualboy_libretro_debug_engine_pair(), UINT32_C(120000)));
+        api->run();
+        REQUIRE(frontend.video_calls == 1U && frontend.video_contract_ok);
+        api->unload_game();
+    }
+#endif
 
     set_default_options();
     frontend.link = "disabled";

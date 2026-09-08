@@ -30,6 +30,11 @@ enum dualboy_engine_family {
     DUALBOY_ENGINE_MELONDS,
 };
 
+enum dualboy_video_renderer {
+    DUALBOY_VIDEO_RENDERER_SOFTWARE = 0,
+    DUALBOY_VIDEO_RENDERER_OPENGL,
+};
+
 enum dualboy_log_level {
     DUALBOY_LOG_DEBUG = 0,
     DUALBOY_LOG_INFO,
@@ -187,6 +192,16 @@ struct dualboy_engine_ops {
     /* True only while both machines are actively joined to an engine transport
      * that requires real-time pacing. The Libretro layer owns frontend policy. */
     bool (*link_transport_active)(const void *pair);
+
+    /* Optional engine-owned renderer transition. The adapter owns any
+     * graphics context and thread affinity; the frontend continues to consume
+     * ordinary CPU video frames. Switching away from OpenGL is the adapter's
+     * controlled resource-destruction boundary. */
+    bool (*set_video_renderer)(void *pair,
+                               enum dualboy_video_renderer renderer,
+                               char *error,
+                               size_t error_size);
+    enum dualboy_video_renderer (*video_renderer)(const void *pair);
 
     void (*destroy_pair)(void *pair);
 
