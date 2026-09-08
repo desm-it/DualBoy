@@ -262,7 +262,7 @@ bool dualboy_session_run(struct dualboy_session *session,
                          size_t error_size)
 {
     struct dualboy_video_frame frames[DUALBOY_MACHINE_COUNT];
-    unsigned port;
+    unsigned machine;
 
     if (session == NULL || !session->loaded || session->engine == NULL ||
         port_inputs == NULL || display == NULL ||
@@ -274,15 +274,13 @@ bool dualboy_session_run(struct dualboy_session *session,
         return false;
     }
 
-    for (port = 0U; port < DUALBOY_MACHINE_COUNT; ++port) {
-        const unsigned machine =
-            dualboy_machine_for_port(port, display->swap_players);
+    for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
         if (session->engine->set_machine_input != NULL) {
             session->engine->set_machine_input(session->pair, machine,
-                                               &port_inputs[port]);
+                                               &port_inputs[machine]);
         } else {
             session->engine->set_input(session->pair, machine,
-                                       port_inputs[port].buttons);
+                                       port_inputs[machine].buttons);
         }
     }
     if (!session->engine->run_frame(session->pair, error, error_size)) {

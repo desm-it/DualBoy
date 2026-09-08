@@ -11,7 +11,9 @@
 
 #define DUALBOY_OPTION_MODE "dualboy_mode"
 #define DUALBOY_OPTION_LAYOUT "dualboy_layout"
-#define DUALBOY_OPTION_SWAP "dualboy_swap_players"
+/* Keep the original public key so existing per-core overrides continue to
+ * work; only its label and behavior are narrowed to presentation. */
+#define DUALBOY_OPTION_SWAP_SCREENS "dualboy_swap_players"
 #define DUALBOY_OPTION_AUDIO "dualboy_audio_source"
 
 static struct retro_core_option_v2_category option_categories[] = {
@@ -92,12 +94,12 @@ static struct retro_core_option_v2_definition option_v2_definitions[] = {
         "enabled",
     },
     {
-        DUALBOY_OPTION_SWAP,
-        "Swap Players/Screens",
-        "Swap Players/Screens",
-        "Swap both controller assignments and screen positions together.",
+        DUALBOY_OPTION_SWAP_SCREENS,
+        "Swap Screens",
+        "Swap Screens",
+        "Exchange the positions of the two machine screens without changing controller assignments.",
         NULL,
-        "link",
+        "video",
         {
             {"disabled", "Disabled"},
             {"enabled", "Enabled"},
@@ -174,9 +176,9 @@ static struct retro_core_option_definition option_v1_definitions[] = {
         "enabled",
     },
     {
-        DUALBOY_OPTION_SWAP,
-        "Swap Players/Screens",
-        "Swap both controller assignments and screen positions together.",
+        DUALBOY_OPTION_SWAP_SCREENS,
+        "Swap Screens",
+        "Exchange the positions of the two machine screens without changing controller assignments.",
         {
             {"disabled", "Disabled"},
             {"enabled", "Enabled"},
@@ -205,7 +207,7 @@ static struct retro_variable option_legacy_definitions[] = {
     {DUALBOY_OPTION_NDS_RENDERER,
      "Nintendo DS Renderer; software|opengl"},
     {DUALBOY_OPTION_LINK, "Local Link; enabled|disabled"},
-    {DUALBOY_OPTION_SWAP, "Swap Players/Screens; disabled|enabled"},
+    {DUALBOY_OPTION_SWAP_SCREENS, "Swap Screens; disabled|enabled"},
     {DUALBOY_OPTION_AUDIO, "Audio Source; player1|disabled"},
     {NULL, NULL},
 };
@@ -219,7 +221,7 @@ void dualboy_options_set_defaults(struct dualboy_options *options)
     options->mode = DUALBOY_MODE_DUAL;
     options->layout = DUALBOY_LAYOUT_SIDE_BY_SIDE;
     options->link_enabled = true;
-    options->swap_players = false;
+    options->swap_screens = false;
     options->audio_player1 = true;
     options->nds_renderer = DUALBOY_VIDEO_RENDERER_SOFTWARE;
 }
@@ -320,18 +322,19 @@ static void read_nds_renderer(retro_environment_t environment,
     }
 }
 
-static void read_swap(retro_environment_t environment,
-                      struct dualboy_options *options)
+static void read_swap_screens(retro_environment_t environment,
+                              struct dualboy_options *options)
 {
-    const char *value = option_value(environment, DUALBOY_OPTION_SWAP);
+    const char *value =
+        option_value(environment, DUALBOY_OPTION_SWAP_SCREENS);
 
     if (value == NULL) {
         return;
     }
     if (strcmp(value, "enabled") == 0) {
-        options->swap_players = true;
+        options->swap_screens = true;
     } else if (strcmp(value, "disabled") == 0) {
-        options->swap_players = false;
+        options->swap_screens = false;
     }
 }
 
@@ -364,13 +367,13 @@ bool dualboy_options_read(retro_environment_t environment,
     read_layout(environment, options);
     read_nds_renderer(environment, options);
     read_link(environment, options);
-    read_swap(environment, options);
+    read_swap_screens(environment, options);
     read_audio(environment, options);
 
     return previous.mode != options->mode ||
            previous.layout != options->layout ||
            previous.link_enabled != options->link_enabled ||
-           previous.swap_players != options->swap_players ||
+           previous.swap_screens != options->swap_screens ||
            previous.audio_player1 != options->audio_player1 ||
            previous.nds_renderer != options->nds_renderer;
 }

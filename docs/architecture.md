@@ -164,13 +164,15 @@ returns remains uncancellable in either mode.
 Adapters return native XRGB8888 frames: 160x144 for GB/GBC, 240x160 for GBA, and
 256x384 for NDS. Each NDS frame is a fixed 256x192 top screen followed by its
 256x192 bottom/touch screen. The compositor implements side-by-side, top/bottom,
-Player 1 only, Player 2 only, and a coupled screen/controller swap without
+Player 1 only, Player 2 only, and a presentation-only screen swap without
 scaling. NDS dual geometry is therefore 512x384 or 256x768. Geometry changes are
-reported before the next frame, and the maximum allocation is 512x768.
+reported before the next frame, and the maximum allocation is 512x768. Screen
+swapping exchanges the two dual-mode display slots; it does not alter a
+player-only selection or controller-to-machine routing.
 
 Input is polled once per frontend frame and captured as two structured values
 containing a RetroPad mask and optional touch coordinates. RetroArch port 0 maps
-to machine 0 and port 1 to machine 1 before an optional coupled swap. During NDS
+to machine 0 and port 1 to machine 1 independently of screen order. During NDS
 sessions, successive pointer indices are inverse-mapped through the active
 compositor geometry and accepted only inside a displayed bottom screen, with one
 first-wins contact per DS. Each player's right analog stick plus R3 or R2 is an

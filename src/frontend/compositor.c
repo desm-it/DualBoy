@@ -9,12 +9,12 @@
 #include <stdint.h>
 #include <string.h>
 
-unsigned dualboy_machine_for_port(unsigned port, bool swap_players)
+unsigned dualboy_machine_for_screen(unsigned screen, bool swap_screens)
 {
-    if (port >= DUALBOY_MACHINE_COUNT) {
+    if (screen >= DUALBOY_MACHINE_COUNT) {
         return DUALBOY_MACHINE_COUNT;
     }
-    return swap_players ? (DUALBOY_MACHINE_COUNT - 1U - port) : port;
+    return swap_screens ? (DUALBOY_MACHINE_COUNT - 1U - screen) : screen;
 }
 
 static bool valid_frame(const struct dualboy_video_frame *frame)
@@ -25,11 +25,15 @@ static bool valid_frame(const struct dualboy_video_frame *frame)
 
 static unsigned selected_machine(const struct dualboy_compositor_config *config)
 {
-    unsigned logical_machine = 0U;
-    if (config->mode == DUALBOY_MODE_PLAYER2) {
-        logical_machine = 1U;
+    return config->mode == DUALBOY_MODE_PLAYER2 ? 1U : 0U;
+}
+
+static unsigned screen_for_machine(unsigned machine, bool swap_screens)
+{
+    if (machine >= DUALBOY_MACHINE_COUNT) {
+        return DUALBOY_MACHINE_COUNT;
     }
-    return dualboy_machine_for_port(logical_machine, config->swap_players);
+    return swap_screens ? (DUALBOY_MACHINE_COUNT - 1U - machine) : machine;
 }
 
 bool dualboy_compositor_geometry(const struct dualboy_video_frame frames[2],
@@ -49,8 +53,8 @@ bool dualboy_compositor_geometry(const struct dualboy_video_frame frames[2],
         geometry->width = frames[first].width;
         geometry->height = frames[first].height;
     } else {
-        first = dualboy_machine_for_port(0U, config->swap_players);
-        second = dualboy_machine_for_port(1U, config->swap_players);
+        first = dualboy_machine_for_screen(0U, config->swap_screens);
+        second = dualboy_machine_for_screen(1U, config->swap_screens);
         if (frames[first].width != frames[second].width ||
             frames[first].height != frames[second].height) {
             return false;
@@ -72,52 +76,49 @@ bool dualboy_compositor_map_point(
     const struct dualboy_compositor_config *config,
     unsigned composite_x,
     unsigned composite_y,
-    unsigned *port,
+    unsigned *mapped_machine,
     unsigned *machine_x,
     unsigned *machine_y)
 {
     struct dualboy_geometry geometry;
-    unsigned logical_port;
+    unsigned screen;
     unsigned machine;
     unsigned local_x = composite_x;
     unsigned local_y = composite_y;
 
-    if (port == NULL || machine_x == NULL || machine_y == NULL ||
+    if (mapped_machine == NULL || machine_x == NULL || machine_y == NULL ||
         !dualboy_compositor_geometry(frames, config, &geometry) ||
         composite_x >= geometry.width || composite_y >= geometry.height) {
         return false;
     }
 
     if (config->mode == DUALBOY_MODE_PLAYER1) {
-        logical_port = 0U;
+        machine = 0U;
     } else if (config->mode == DUALBOY_MODE_PLAYER2) {
-        logical_port = 1U;
+        machine = 1U;
     } else if (config->layout == DUALBOY_LAYOUT_TOP_BOTTOM) {
-        logical_port = composite_y >= frames[dualboy_machine_for_port(
-                                              0U, config->swap_players)].height
-                           ? 1U
-                           : 0U;
-        if (logical_port == 1U) {
-            local_y -= frames[dualboy_machine_for_port(
-                                  0U, config->swap_players)].height;
+        const unsigned first =
+            dualboy_machine_for_screen(0U, config->swap_screens);
+        screen = composite_y >= frames[first].height ? 1U : 0U;
+        if (screen == 1U) {
+            local_y -= frames[first].height;
         }
+        machine = dualboy_machine_for_screen(screen, config->swap_screens);
     } else {
-        logical_port = composite_x >= frames[dualboy_machine_for_port(
-                                              0U, config->swap_players)].width
-                           ? 1U
-                           : 0U;
-        if (logical_port == 1U) {
-            local_x -= frames[dualboy_machine_for_port(
-                                  0U, config->swap_players)].width;
+        const unsigned first =
+            dualboy_machine_for_screen(0U, config->swap_screens);
+        screen = composite_x >= frames[first].width ? 1U : 0U;
+        if (screen == 1U) {
+            local_x -= frames[first].width;
         }
+        machine = dualboy_machine_for_screen(screen, config->swap_screens);
     }
 
-    machine = dualboy_machine_for_port(logical_port, config->swap_players);
     if (machine >= DUALBOY_MACHINE_COUNT || local_x >= frames[machine].width ||
         local_y >= frames[machine].height) {
         return false;
     }
-    *port = logical_port;
+    *mapped_machine = machine;
     *machine_x = local_x;
     *machine_y = local_y;
     return true;
@@ -126,37 +127,36 @@ bool dualboy_compositor_map_point(
 bool dualboy_compositor_project_point(
     const struct dualboy_video_frame frames[2],
     const struct dualboy_compositor_config *config,
-    unsigned port,
+    unsigned machine,
     unsigned machine_x,
     unsigned machine_y,
     unsigned *composite_x,
     unsigned *composite_y)
 {
     struct dualboy_geometry geometry;
-    unsigned machine;
+    unsigned screen;
     unsigned first;
     unsigned x = machine_x;
     unsigned y = machine_y;
 
     if (frames == NULL || config == NULL || composite_x == NULL ||
-        composite_y == NULL || port >= DUALBOY_MACHINE_COUNT ||
+        composite_y == NULL || machine >= DUALBOY_MACHINE_COUNT ||
         !dualboy_compositor_geometry(frames, config, &geometry)) {
         return false;
     }
-    if ((config->mode == DUALBOY_MODE_PLAYER1 && port != 0U) ||
-        (config->mode == DUALBOY_MODE_PLAYER2 && port != 1U)) {
+    if ((config->mode == DUALBOY_MODE_PLAYER1 && machine != 0U) ||
+        (config->mode == DUALBOY_MODE_PLAYER2 && machine != 1U)) {
         return false;
     }
 
-    machine = dualboy_machine_for_port(port, config->swap_players);
-    if (machine >= DUALBOY_MACHINE_COUNT ||
-        machine_x >= frames[machine].width ||
+    if (machine_x >= frames[machine].width ||
         machine_y >= frames[machine].height) {
         return false;
     }
 
-    if (config->mode == DUALBOY_MODE_DUAL && port == 1U) {
-        first = dualboy_machine_for_port(0U, config->swap_players);
+    screen = screen_for_machine(machine, config->swap_screens);
+    if (config->mode == DUALBOY_MODE_DUAL && screen == 1U) {
+        first = dualboy_machine_for_screen(0U, config->swap_screens);
         if (config->layout == DUALBOY_LAYOUT_TOP_BOTTOM) {
             y += frames[first].height;
         } else {
@@ -287,8 +287,8 @@ bool dualboy_compose_frame(uint32_t *output,
             copy_row(output + (size_t)row * geometry.width, &frames[first], row);
         }
     } else {
-        first = dualboy_machine_for_port(0U, config->swap_players);
-        second = dualboy_machine_for_port(1U, config->swap_players);
+        first = dualboy_machine_for_screen(0U, config->swap_screens);
+        second = dualboy_machine_for_screen(1U, config->swap_screens);
         if (config->layout == DUALBOY_LAYOUT_TOP_BOTTOM) {
             for (row = 0U; row < frames[first].height; ++row) {
                 copy_row(output + (size_t)row * geometry.width, &frames[first], row);

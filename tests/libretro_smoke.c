@@ -2021,8 +2021,8 @@ static bool test_two_rom_subsystem(struct core_api *api,
     frontend.swap = "enabled";
     frontend.option_updated = true;
     api->run();
-    REQUIRE((first_sram[1] & 0x0FU) == 0x0DU);
-    REQUIRE((second_sram[1] & 0x0FU) == 0x0EU);
+    REQUIRE((first_sram[1] & 0x0FU) == 0x0EU);
+    REQUIRE((second_sram[1] & 0x0FU) == 0x0DU);
     REQUIRE(frontend.first_screen_hash == second_hash);
     REQUIRE(frontend.second_screen_hash == first_hash);
 

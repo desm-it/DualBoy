@@ -139,8 +139,10 @@ save names.
 ## Players, screens, and audio
 
 RetroArch port 1 controls machine 0, shown on the left or top. Port 2 controls
-machine 1, shown on the right or bottom. **Swap Players/Screens** changes both
-controller assignment and screen position together.
+machine 1, shown on the right or bottom. **Swap Screens** exchanges those two
+screen positions without changing which controller operates either machine.
+In a player-only display mode, the selected player's machine remains selected;
+there is no second visible screen to exchange.
 
 Dual mode is native-pixel composition: GB/GBC is 320x144 side by side or 160x288
 top/bottom; GBA is 480x160 or 240x320; and NDS is 512x384 or 256x768. Each DS
@@ -169,7 +171,7 @@ still requires physical validation.
 | `dualboy_layout` | `side_by_side`, `top_bottom` | `side_by_side` | Arrange the two native-resolution frames. |
 | `dualboy_nds_renderer` | `software`, `opengl` | `software` | Select the NDS renderer live. OpenGL requires Linux, `libEGL.so.1`, explicit surfaceless EGL, and an OpenGL 3.2 driver. |
 | `dualboy_link` | `enabled`, `disabled` | `enabled` | Attach or detach the emulated cable or NDS local-wireless transport. Changing this for GBA resets both machines; NDS changes dynamically without a reload. |
-| `dualboy_swap_players` | `disabled`, `enabled` | `disabled` | Swap screens and controller ports as one operation. |
+| `dualboy_swap_players` | `disabled`, `enabled` | `disabled` | Exchange the two screen positions without changing controller routing. The legacy key is retained for existing overrides; Player-only modes are unaffected. |
 | `dualboy_audio_source` | `player1`, `disabled` | `player1` | Emit Player 1 audio or suppress output while preserving timing. |
 
 Options are exposed through Libretro core-options v2, v1, and the legacy variable

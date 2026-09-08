@@ -152,7 +152,7 @@ static const struct dualboy_engine_ops fake_legacy_ops = {
     .destroy_pair = fake_destroy,
 };
 
-static bool test_same_content_and_swap(void)
+static bool test_same_content_and_screen_swap(void)
 {
     uint8_t source[4] = {1U, 2U, 3U, 4U};
     const struct dualboy_rom roms[2] = {
@@ -183,8 +183,8 @@ static bool test_same_content_and_swap(void)
     CHECK(pair->rom_data[0][0] == 1U);
 
     CHECK(dualboy_session_run(&session, input, &display, error, sizeof(error)));
-    CHECK(memcmp(&pair->input[0], &input[1], sizeof(input[0])) == 0);
-    CHECK(memcmp(&pair->input[1], &input[0], sizeof(input[0])) == 0);
+    CHECK(memcmp(&pair->input[0], &input[0], sizeof(input[0])) == 0);
+    CHECK(memcmp(&pair->input[1], &input[1], sizeof(input[0])) == 0);
     CHECK(session.composite.width == 4U && session.composite.height == 2U);
     CHECK(session.composite.pixels[0] == 2U);
     CHECK(session.composite.pixels[2] == 1U);
@@ -257,7 +257,8 @@ static bool test_legacy_input_fallback(void)
 
 int main(void)
 {
-    if (!test_same_content_and_swap() || !test_partial_failure_cleanup() ||
+    if (!test_same_content_and_screen_swap() ||
+        !test_partial_failure_cleanup() ||
         !test_legacy_input_fallback()) {
         return EXIT_FAILURE;
     }

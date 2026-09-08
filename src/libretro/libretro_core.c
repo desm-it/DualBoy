@@ -424,7 +424,7 @@ static struct dualboy_compositor_config current_display(void)
 
     display.mode = core.options.mode;
     display.layout = core.options.layout;
-    display.swap_players = core.options.swap_players;
+    display.swap_screens = core.options.swap_screens;
     return display;
 }
 
@@ -1049,7 +1049,7 @@ static void apply_pointer_contacts(
         int16_t pointer_y;
         unsigned composite_x;
         unsigned composite_y;
-        unsigned port;
+        unsigned machine;
         unsigned machine_x;
         unsigned machine_y;
 
@@ -1064,19 +1064,19 @@ static void apply_pointer_contacts(
         composite_x = normalized_coordinate(pointer_x, geometry.width);
         composite_y = normalized_coordinate(pointer_y, geometry.height);
         if (!dualboy_compositor_map_point(frames, display, composite_x,
-                                          composite_y, &port, &machine_x,
+                                          composite_y, &machine, &machine_x,
                                           &machine_y) ||
-            port >= DUALBOY_MACHINE_COUNT || assigned[port] ||
+            machine >= DUALBOY_MACHINE_COUNT || assigned[machine] ||
             machine_x >= DUALBOY_NDS_SCREEN_WIDTH ||
             machine_y < DUALBOY_NDS_SCREEN_HEIGHT ||
             machine_y >= DUALBOY_NDS_SCREEN_HEIGHT * 2U) {
             continue;
         }
-        inputs[port].touch_active = true;
-        inputs[port].touch_x = (uint16_t)machine_x;
-        inputs[port].touch_y =
+        inputs[machine].touch_active = true;
+        inputs[machine].touch_x = (uint16_t)machine_x;
+        inputs[machine].touch_y =
             (uint16_t)(machine_y - DUALBOY_NDS_SCREEN_HEIGHT);
-        assigned[port] = true;
+        assigned[machine] = true;
     }
 }
 
@@ -1107,7 +1107,7 @@ static void publish_video_with_touch_cursors(
         unsigned cursor_y[DUALBOY_MACHINE_COUNT] = {0U, 0U};
         bool draw[DUALBOY_MACHINE_COUNT] = {false, false};
         bool any_cursor = false;
-        unsigned port;
+        unsigned machine;
 
         if (core.session.engine != NULL &&
             core.session.engine->video_frame != NULL &&
@@ -1115,17 +1115,18 @@ static void publish_video_with_touch_cursors(
                                              &frames[0]) &&
             core.session.engine->video_frame(core.session.pair, 1U,
                                              &frames[1])) {
-            for (port = 0U; port < DUALBOY_MACHINE_COUNT; ++port) {
-                draw[port] =
-                    (pointer_assigned == NULL || !pointer_assigned[port]) &&
-                    dualboy_touch_cursor_visible(&core.touch_cursors[port]) &&
+            for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
+                draw[machine] =
+                    (pointer_assigned == NULL || !pointer_assigned[machine]) &&
+                    dualboy_touch_cursor_visible(
+                        &core.touch_cursors[machine]) &&
                     dualboy_compositor_project_point(
-                        frames, &core.session.display, port,
-                        core.touch_cursors[port].x,
+                        frames, &core.session.display, machine,
+                        core.touch_cursors[machine].x,
                         DUALBOY_NDS_SCREEN_HEIGHT +
-                            core.touch_cursors[port].y,
-                        &cursor_x[port], &cursor_y[port]);
-                any_cursor = any_cursor || draw[port];
+                            core.touch_cursors[machine].y,
+                        &cursor_x[machine], &cursor_y[machine]);
+                any_cursor = any_cursor || draw[machine];
             }
         }
 
@@ -1144,12 +1145,12 @@ static void publish_video_with_touch_cursors(
             }
             pitch = row_bytes;
             pixels = core.presentation_buffer;
-            for (port = 0U; port < DUALBOY_MACHINE_COUNT; ++port) {
-                if (draw[port]) {
+            for (machine = 0U; machine < DUALBOY_MACHINE_COUNT; ++machine) {
+                if (draw[machine]) {
                     (void)dualboy_compositor_draw_cursor(
                         core.presentation_buffer, composite->width,
-                        composite->height, pitch, cursor_x[port],
-                        cursor_y[port], accent[port]);
+                        composite->height, pitch, cursor_x[machine],
+                        cursor_y[machine], accent[machine]);
                 }
             }
         }

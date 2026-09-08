@@ -136,7 +136,7 @@ The repository's test sources use generated synthetic ROMs rather than commercia
 content. The passing native and x86-64 runs above exercised:
 
 - Nintendo-header detection, family compatibility, composition geometry,
-  player-only layouts, and coupled screen/controller swap;
+  player-only layouts, and presentation-only screen swap;
 - shared immutable normal-load content with independent mutable sessions,
   two-slot subsystem ownership, and idempotent partial-failure cleanup;
 - paired save-state round trips, link payload restoration, battery/RTC
@@ -291,9 +291,9 @@ Implementation plus the automated evidence above establish these components:
   `LocalMP` for NDS;
 - normal same-ROM, exactly-two-ROM `dualboylink` subsystem, and exactly-two-entry
   local M3U loading, with header-first detection and mixed-family rejection;
-- side-by-side, top/bottom, Player 1 only, Player 2 only, coupled swap, mutually
-  exclusive NDS OpenGL/local-link selection, link enable/disable, and Player
-  1/disabled audio core options;
+- side-by-side, top/bottom, Player 1 only, Player 2 only, presentation-only
+  screen swap, mutually exclusive NDS OpenGL/local-link selection, link
+  enable/disable, and Player 1/disabled audio core options;
 - collision-safe independent SaveRAM/RTC, hash-derived pathless identities,
   nondestructive GBA `.sav` import, atomic writes, per-region
   `.dualboy.lock` coordination, and read-only behavior under contention;

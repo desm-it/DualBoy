@@ -162,10 +162,11 @@ Useful core options are:
   Enabled**
 - For experimental non-linked rendering: **Nintendo DS Renderer = OpenGL** and
   **Local Link = Disabled**
-- **Swap Players/Screens = Enabled** when physical port order is reversed
+- **Swap Screens = Enabled** when you want to exchange only their placement
 - **Audio Source = Player 1** or **Disabled**
 
-Swap changes controller assignment and screen placement together. GBA link
+Screen swap does not change controller assignments, and has no effect in a
+player-only display mode. GBA link
 changes reset both machines, so configure the cable before beginning play. NDS
 link changes dynamically: disabling it disconnects local wireless without a
 content reload. Fast-forward is available until both NDS consoles join the
@@ -228,7 +229,8 @@ Before trusting a long session:
 1. Load a source-generated or otherwise legally redistributable test cartridge.
 2. Confirm both screens advance and two controller ports affect different
    machines.
-3. Toggle **Swap Players/Screens** and verify both input and placement swap.
+3. Toggle **Swap Screens** and verify placement swaps while each controller
+   continues operating the same machine.
 4. Create distinct in-game battery progress on both machines, cleanly unload
    content, reload, and verify both.
 5. For GB/GBC/GBA, create a RetroArch save state, advance both machines, load it,

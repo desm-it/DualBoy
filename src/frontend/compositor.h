@@ -25,7 +25,7 @@ enum dualboy_layout {
 struct dualboy_compositor_config {
     enum dualboy_display_mode mode;
     enum dualboy_layout layout;
-    bool swap_players;
+    bool swap_screens;
 };
 
 struct dualboy_geometry {
@@ -34,29 +34,31 @@ struct dualboy_geometry {
     float aspect_ratio;
 };
 
-unsigned dualboy_machine_for_port(unsigned port, bool swap_players);
+/* Returns the emulated machine drawn in a dual-mode display slot. Screen
+ * swapping affects presentation only; it never changes controller routing. */
+unsigned dualboy_machine_for_screen(unsigned screen, bool swap_screens);
 
 bool dualboy_compositor_geometry(const struct dualboy_video_frame frames[2],
                                  const struct dualboy_compositor_config *config,
                                  struct dualboy_geometry *geometry);
 
-/* Maps a composite-image pixel to the logical frontend port occupying that
- * display slot and to coordinates within its unscaled machine frame. */
+/* Maps a composite-image pixel to the emulated machine displayed there and to
+ * coordinates within its unscaled frame. */
 bool dualboy_compositor_map_point(
     const struct dualboy_video_frame frames[2],
     const struct dualboy_compositor_config *config,
     unsigned composite_x,
     unsigned composite_y,
-    unsigned *port,
+    unsigned *machine,
     unsigned *machine_x,
     unsigned *machine_y);
 
-/* Projects a logical controller port's machine-local pixel into the composed
- * image. This is the inverse of map_point for a displayed machine. */
+/* Projects a machine-local pixel into the composed image. This is the inverse
+ * of map_point for a displayed machine. */
 bool dualboy_compositor_project_point(
     const struct dualboy_video_frame frames[2],
     const struct dualboy_compositor_config *config,
-    unsigned port,
+    unsigned machine,
     unsigned machine_x,
     unsigned machine_y,
     unsigned *composite_x,

@@ -231,13 +231,14 @@ static bool test_compositor(void)
     CHECK(result.width == 4U && result.height == 2U);
     CHECK(check_pixels(output, side_expected, 8U));
 
-    config.swap_players = true;
+    config.swap_screens = true;
     CHECK(dualboy_compose_frame(output, 8U, frames, &config, &result));
     CHECK(check_pixels(output, swapped_expected, 8U));
-    CHECK(dualboy_machine_for_port(0U, true) == 1U);
-    CHECK(dualboy_machine_for_port(1U, true) == 0U);
+    CHECK(dualboy_machine_for_screen(0U, true) == 1U);
+    CHECK(dualboy_machine_for_screen(1U, true) == 0U);
+    CHECK(dualboy_machine_for_screen(2U, true) == DUALBOY_MACHINE_COUNT);
 
-    config.swap_players = false;
+    config.swap_screens = false;
     config.layout = DUALBOY_LAYOUT_TOP_BOTTOM;
     CHECK(dualboy_compose_frame(output, 8U, frames, &config, &result));
     CHECK(result.width == 2U && result.height == 4U);
@@ -247,9 +248,9 @@ static bool test_compositor(void)
     CHECK(dualboy_compose_frame(output, 8U, frames, &config, &result));
     CHECK(result.width == 2U && result.height == 2U);
     CHECK(check_pixels(output, second, 4U));
-    config.swap_players = true;
+    config.swap_screens = true;
     CHECK(dualboy_compose_frame(output, 8U, frames, &config, &result));
-    CHECK(check_pixels(output, first, 4U));
+    CHECK(check_pixels(output, second, 4U));
 
     CHECK(!dualboy_compose_frame(output, 3U, frames, &config, &result));
     return true;
@@ -268,18 +269,18 @@ static bool test_nds_geometry_and_point_mapping(void)
         false,
     };
     struct dualboy_geometry geometry;
-    unsigned port;
+    unsigned machine;
     unsigned x;
     unsigned y;
 
     CHECK(dualboy_compositor_geometry(frames, &config, &geometry));
     CHECK(geometry.width == 512U && geometry.height == 384U);
     CHECK(dualboy_compositor_map_point(frames, &config, 10U, 200U,
-                                       &port, &x, &y));
-    CHECK(port == 0U && x == 10U && y == 200U);
+                                       &machine, &x, &y));
+    CHECK(machine == 0U && x == 10U && y == 200U);
     CHECK(dualboy_compositor_map_point(frames, &config, 300U, 300U,
-                                       &port, &x, &y));
-    CHECK(port == 1U && x == 44U && y == 300U);
+                                       &machine, &x, &y));
+    CHECK(machine == 1U && x == 44U && y == 300U);
     CHECK(dualboy_compositor_project_point(frames, &config, 0U, 10U,
                                            200U, &x, &y));
     CHECK(x == 10U && y == 200U);
@@ -287,21 +288,24 @@ static bool test_nds_geometry_and_point_mapping(void)
                                            300U, &x, &y));
     CHECK(x == 300U && y == 300U);
 
-    config.swap_players = true;
+    config.swap_screens = true;
     CHECK(dualboy_compositor_map_point(frames, &config, 10U, 200U,
-                                       &port, &x, &y));
-    CHECK(port == 0U && x == 10U && y == 200U);
-    CHECK(dualboy_compositor_project_point(frames, &config, 1U, 255U,
+                                       &machine, &x, &y));
+    CHECK(machine == 1U && x == 10U && y == 200U);
+    CHECK(dualboy_compositor_project_point(frames, &config, 0U, 255U,
                                            383U, &x, &y));
     CHECK(x == 511U && y == 383U);
+    CHECK(dualboy_compositor_project_point(frames, &config, 1U, 255U,
+                                           383U, &x, &y));
+    CHECK(x == 255U && y == 383U);
 
-    config.swap_players = false;
+    config.swap_screens = false;
     config.layout = DUALBOY_LAYOUT_TOP_BOTTOM;
     CHECK(dualboy_compositor_geometry(frames, &config, &geometry));
     CHECK(geometry.width == 256U && geometry.height == 768U);
     CHECK(dualboy_compositor_map_point(frames, &config, 100U, 600U,
-                                       &port, &x, &y));
-    CHECK(port == 1U && x == 100U && y == 216U);
+                                       &machine, &x, &y));
+    CHECK(machine == 1U && x == 100U && y == 216U);
     CHECK(dualboy_compositor_project_point(frames, &config, 1U, 100U,
                                            216U, &x, &y));
     CHECK(x == 100U && y == 600U);
@@ -310,10 +314,10 @@ static bool test_nds_geometry_and_point_mapping(void)
     CHECK(dualboy_compositor_geometry(frames, &config, &geometry));
     CHECK(geometry.width == 256U && geometry.height == 384U);
     CHECK(dualboy_compositor_map_point(frames, &config, 255U, 383U,
-                                       &port, &x, &y));
-    CHECK(port == 1U && x == 255U && y == 383U);
+                                       &machine, &x, &y));
+    CHECK(machine == 1U && x == 255U && y == 383U);
     CHECK(!dualboy_compositor_map_point(frames, &config, 256U, 383U,
-                                        &port, &x, &y));
+                                        &machine, &x, &y));
     CHECK(dualboy_compositor_project_point(frames, &config, 1U, 255U,
                                            383U, &x, &y));
     CHECK(x == 255U && y == 383U);

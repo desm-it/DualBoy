@@ -19,7 +19,7 @@ struct dualboy_options {
     enum dualboy_display_mode mode;
     enum dualboy_layout layout;
     bool link_enabled;
-    bool swap_players;
+    bool swap_screens;
     bool audio_player1;
     enum dualboy_video_renderer nds_renderer;
 };
