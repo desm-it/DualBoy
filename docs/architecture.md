@@ -298,8 +298,9 @@ pinned destructor; the gitlink remains byte-clean and the generated source keeps
 its upstream GPL header. The untouched generated GLAD source normally owned by
 melonDS's desktop frontend is built privately and resolves functions through
 the dedicated EGL contexts; all platform glue remains in DualBoy. A CMake
-install also stages `LICENSE`, `NOTICE`, `THIRD_PARTY.md`, and the selected
-dependency license texts under `share/doc/dualboy`.
+install also stages `LICENSE`, `NOTICE`, `THIRD_PARTY.md`, the optional RetroArch
+menu-control fragment, and the selected dependency license texts under
+`share/doc/dualboy`.
 
 melonDS is GPL-3.0-or-later. Consequently the combined shared object and its
 binary distribution are conveyed under GPLv3-compatible terms, while

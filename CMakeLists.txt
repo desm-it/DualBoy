@@ -487,6 +487,9 @@ endif()
 install(TARGETS dualboy_libretro LIBRARY DESTINATION lib/libretro)
 install(FILES dualboy_libretro.info DESTINATION share/libretro/info)
 install(FILES LICENSE NOTICE THIRD_PARTY.md DESTINATION share/doc/dualboy)
+install(FILES config/retroarch/dualboy-menu-controls.cfg
+    DESTINATION share/doc/dualboy/retroarch
+)
 install(FILES third_party/melonDS/LICENSE
     DESTINATION share/doc/dualboy/licenses
     RENAME melonDS-GPL-3.0.txt

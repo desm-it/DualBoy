@@ -203,6 +203,64 @@ rewind_enable = "false"
 run_ahead_enabled = "false"
 ```
 
+### Let either controller use the menu
+
+RetroArch owns its menu and menu hotkeys; a Libretro core cannot take control of
+them. This distinction is especially visible with the default **Pause Content
+When Menu Is Active** setting: RetroArch stops calling DualBoy's `retro_run()`.
+Even when that pause setting is disabled, RetroArch blocks Libretro input while
+it runs the core behind the menu. A DualBoy core option therefore cannot make
+Player 2 navigate a paused Quick Menu.
+
+Configure this in RetroArch itself:
+
+1. Open **Settings > Input > Menu Controls** and enable **All Users Control
+   Menu**, then save the current RetroArch configuration.
+2. If the existing menu toggle already opens the menu from every controller,
+   keep it. Otherwise, open **Settings > Input > Hotkeys** and optionally set
+   **Menu Toggle (Controller Combo)** to **Start + Select**.
+
+With **All Users Control Menu** enabled, either configured controller can
+navigate the menu and use the frontend's configured menu action to close it.
+When selected, Start + Select lets either controller open or close the menu and
+avoids L3 + R3, which collides with DualBoy's R3 controller stylus.
+
+The repository includes the equivalent minimal fragment at
+[`config/retroarch/dualboy-menu-controls.cfg`](../config/retroarch/dualboy-menu-controls.cfg).
+The fragment changes only **All Users Control Menu**; it deliberately preserves
+the user's existing menu-toggle binding. Do not replace `retroarch.cfg` with
+this one-line fragment. Either merge its assignment into the active
+configuration while RetroArch is closed, or append it for a particular launch:
+
+```sh
+retroarch --appendconfig=/absolute/path/to/dualboy-menu-controls.cfg \
+  -L /absolute/path/to/dualboy_libretro.so /absolute/path/to/content.m3u
+```
+
+For users who choose the optional combo, the config value
+`input_menu_toggle_gamepad_combo = "4"` means Start + Select in both RetroArch
+1.22.2 and the primary source revision audited on 2026-09-08. Prefer the named UI
+setting rather than carrying that numeric value into an unknown future version.
+
+This frontend boundary and the two keys were verified against RetroArch primary
+source commit
+[`8039bc24666366ade168776ccffd303620fc26ed`](https://github.com/libretro/RetroArch/commit/8039bc24666366ade168776ccffd303620fc26ed):
+
+- RetroArch defines **All Users Control Menu** and **Menu Toggle (Controller
+  Combo)** as frontend settings in
+  [`settings_def_input_haptics.h`](https://github.com/libretro/RetroArch/blob/8039bc24666366ade168776ccffd303620fc26ed/settings/settings_def_input_haptics.h#L7-L11)
+  and
+  [`settings_def_input_haptics.h`](https://github.com/libretro/RetroArch/blob/8039bc24666366ade168776ccffd303620fc26ed/settings/settings_def_input_haptics.h#L53-L57).
+- Its input loop reads every configured controller and restricts menu input to
+  User 1 only when `all_users_control_menu` is false in
+  [`input_driver.c`](https://github.com/libretro/RetroArch/blob/8039bc24666366ade168776ccffd303620fc26ed/input/input_driver.c#L8150-L8285); the
+  menu-toggle combination is then evaluated from those collected frontend bits
+  in
+  [`runloop.c`](https://github.com/libretro/RetroArch/blob/8039bc24666366ade168776ccffd303620fc26ed/runloop.c#L6165-L6174).
+- The menu runloop calls the core only when content is allowed to keep running
+  and explicitly blocks Libretro input in that case in
+  [`runloop.c`](https://github.com/libretro/RetroArch/blob/8039bc24666366ade168776ccffd303620fc26ed/runloop.c#L5965-L6005).
+
 ## Saves and backups
 
 Confirm the active Save Files directory before the first run. In normal same-ROM

@@ -61,8 +61,9 @@ cmake --install build-linux-x86_64 --prefix "$PWD/stage"
 ```
 
 This installs the core below `lib/libretro`, its metadata below
-`share/libretro/info`, and its notices and component license texts below
-`share/doc/dualboy` in the selected prefix.
+`share/libretro/info`, and its notices, component license texts, and optional
+RetroArch menu-control fragment below `share/doc/dualboy` in the selected
+prefix.
 
 ## Install in RetroArch
 
@@ -165,6 +166,13 @@ without meaningful stick movement. A physical pointer contact temporarily takes
 precedence over the corresponding stick reticle.
 Whether a particular Steam Deck input driver preserves multiple pointer indices
 still requires physical validation.
+
+RetroArch, not the core, owns input while its menu is open. Enable RetroArch's
+**All Users Control Menu** setting so either configured controller can navigate
+and close it with the frontend's existing menu toggle. **Start + Select** is an
+optional shared toggle that avoids DualBoy's R3 stylus binding. A ready-to-merge
+configuration fragment and the exact Steam Deck steps are in
+[Steam Deck setup](docs/steam-deck.md#let-either-controller-use-the-menu).
 
 ## Core options
 

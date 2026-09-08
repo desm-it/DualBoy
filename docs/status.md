@@ -26,8 +26,8 @@ controller, performance, suspend/resume, and compatibility boundaries.
   `bc4e4b67d2d470d7c682810a1e892cafd6f9082b` was inspected as a pattern
   reference only and is not a production dependency.
 - The pinned Linux build environment ran as `linux/amd64` on the ARM64
-  development host, and earlier artifacts were identified as x86-64 ELF shared
-  objects built by GCC 12.2.0.
+  development host, and the final artifact was identified as an x86-64 ELF
+  shared object built by GCC 12.2.0.
 
 ## Current post-NDS build and test results
 
@@ -37,12 +37,17 @@ digest-pinned `linux/amd64` container on an ARM64 Docker host:
 ```text
 make test-linux-x86_64
 100% tests passed, 0 tests failed out of 10
-Total Test time (real) = 66.00 sec
-sameboy_adapter_unit: 9.17 seconds
-mgba_adapter_unit: 5.10 seconds
-melonds_adapter_unit: 14.58 seconds
-libretro_abi_smoke: 18.15 seconds
-libretro_nds_pointer_integration: 18.46 seconds
+Total Test time (real) = 168.26 sec
+frontend_unit: 0.03 seconds
+session_unit: 0.03 seconds
+state_unit: 0.03 seconds
+persistence_unit: 0.04 seconds
+save_manager_unit: 0.12 seconds
+sameboy_adapter_unit: 8.92 seconds
+mgba_adapter_unit: 4.99 seconds
+melonds_adapter_unit: 35.61 seconds
+libretro_abi_smoke: 22.07 seconds
+libretro_nds_pointer_integration: 96.01 seconds
 ```
 
 The ten passing tests were `frontend_unit`, `session_unit`,
@@ -52,10 +57,10 @@ The ten passing tests were `frontend_unit`, `session_unit`,
 `linux-x86_64` prerequisite release build also completed successfully with
 `DUALBOY_WARNINGS_AS_ERRORS=ON`.
 
-A native Linux ARM64 Debug diagnostic configured with warnings as errors,
-rebuilt the current source, and passed the same 10/10 tests in 18.04 seconds.
+A native Linux ARM64 ASan+UBSan Debug build also passed the same 10/10 tests;
+its timing and recoverable upstream diagnostics are recorded below.
 `git submodule update --init --recursive` succeeded and reported the
-four exact revisions in `THIRD_PARTY.md`; `third_party/melonDS` remained clean.
+four exact revisions in `THIRD_PARTY.md`; every submodule remained clean.
 
 The handoff's three direct host commands were attempted and each exited 127
 because this macOS host has neither `cmake` nor `ctest` installed:
@@ -90,7 +95,8 @@ Source inspection of the current working tree shows:
 
 - the exact untouched melonDS gitlink built internally with its regular OpenGL
   renderer enabled and its desktop frontend, JIT, GDB stub, release LTO, and
-  embedded build metadata disabled;
+  embedded build metadata disabled, with one hash-verified build-tree adaptation
+  that initializes and frees the pinned `GLRenderer2D` CPU vertex arrays;
 - two `melonDS::NDS` objects with distinct userdata, video, cartridge SaveRAM,
   128 KiB generated firmware, locally administered MAC addresses, and persistent
   frame workers;
@@ -98,10 +104,10 @@ Source inspection of the current working tree shows:
   DualBoy registering only IDs 0 and 1 and allowing link enable/disable without
   content reload;
 - an experimental NDS OpenGL Core 3.2 path that is mutually exclusive with
-  `LocalMP`, owns one explicit surfaceless EGL display and two unshared context
-  slots on a dedicated adapter worker, reads both texture layers back into the
-  common CPU compositor, and leaves a complete software pair when private EGL
-  negotiation is unavailable;
+  `LocalMP`, obtains one explicit surfaceless EGL display and creates two
+  dedicated, unshared context slots on an adapter worker, reads both texture
+  layers back into the common CPU compositor, and leaves a complete software
+  pair when EGL negotiation is unavailable;
 - dynamic Libretro fast-forward inhibition only while both NDS instances report
   themselves joined to the enabled transport;
 - fixed 256x384 top-over-bottom per-machine frames, structured controller/touch
@@ -191,6 +197,9 @@ content. The passing native and x86-64 runs above exercised:
 - a deterministic held-worker deadline test proving that a timed-out frame does
   not return before both workers quiesce, that the pair is poisoned, and that
   memory access and destruction are safe afterward;
+- an independently initialized surfaceless EGL display remaining valid across
+  adapter OpenGL teardown, plus sanitizer-visible renderer activation and
+  rollback lifecycles that release the adapted upstream CPU vertex arrays;
 - a real upstream 8 KiB EEPROM transaction left open across a DualBoy frame,
   proving live bytes remain unpublished until `SPIRelease` and then reach the
   shadow through `Platform::WriteNDSSave`, plus a wrapped callback covering the
@@ -221,19 +230,29 @@ The current source completed the native ARM64 ASan+UBSan command:
 ```text
 make asan-linux-native
 100% tests passed, 0 tests failed out of 10
-Total Test time (real) = 137.45 sec
+Total Test time (real) = 171.37 sec
 ```
 
-This is not a clean UBSan claim. CTest returned success and the log contains no
-AddressSanitizer error, but its passing-test output contains 22 recoverable UBSan
-diagnostics: six from untouched SameBoy (`gb.c` null-pointer argument and
-`sm83_cpu.c` negative shift) and sixteen from untouched melonDS (`CP15.cpp` and
-`NDS.cpp` unaligned 32-bit accesses plus `SPU.cpp` zero-bound VLA). The melonDS
-diagnostics occur in the real adapter and Libretro integration tests. Upstream is
-intentionally unmodified, so these are recorded sanitizer blockers/technical
-debt rather than suppressed or represented as a clean pass. An emulated
-`linux/amd64` ASan process is not used on this ARM host because its virtual
-address-space setup is unreliable.
+CTest returned success and the log contains zero AddressSanitizer or
+LeakSanitizer errors. This is still not a clean UBSan claim: its passing-test
+output contains 22 recoverable diagnostics, six from untouched SameBoy (`gb.c`
+null-pointer argument and `sm83_cpu.c` negative shift) and sixteen from untouched
+melonDS (`CP15.cpp` and `NDS.cpp` unaligned 32-bit accesses plus `SPU.cpp`
+zero-bound VLA). The melonDS diagnostics occur in the real adapter and Libretro
+integration tests. The submodules remain unmodified, so these are recorded
+sanitizer blockers/technical debt rather than suppressed or represented as a
+clean pass. An emulated `linux/amd64` ASan process is not used on this ARM host
+because its virtual-address-space setup is unreliable.
+
+The first OpenGL-enabled sanitizer run failed 3/10 tests because pinned
+`GLRenderer2D` leaked its two CPU vertex arrays: 19,968 bytes per 2D renderer,
+or 79,872 bytes for one two-machine renderer lifetime. That failure led to the
+hash-verified build-tree adaptation documented in `THIRD_PARTY.md`; the final
+run above is leak-clean. Separately, the EGL ownership regression first failed
+at `sentinel.IsInitialized()` after adapter teardown, proving that the old
+`eglTerminate` invalidated an independently initialized surfaceless display.
+The final test keeps that display valid while still releasing every
+DualBoy-owned context and surface.
 
 `make symbols-linux-x86_64` printed:
 
@@ -252,8 +271,10 @@ docker run --rm --platform linux/amd64 -u "$(id -u):$(id -g)" \
 ```
 
 The install tree contains the core and metadata plus `LICENSE`, `NOTICE`,
-`THIRD_PARTY.md`, and these eleven component license/provenance files under
-`share/doc/dualboy/licenses`: `FatFs.txt`, `FreeBIOS-BSD-2-Clause.txt`,
+`THIRD_PARTY.md`, the opt-in
+`share/doc/dualboy/retroarch/dualboy-menu-controls.cfg` fragment, and these
+eleven component license/provenance files under `share/doc/dualboy/licenses`:
+`FatFs.txt`, `FreeBIOS-BSD-2-Clause.txt`,
 `GLAD-generated-code.txt`, `Khronos-Apache-2.0.txt`,
 `Khronos-khrplatform.txt`, `SameBoy-Expat.txt`, `Teakra-MIT.txt`,
 `blip-buf-LGPL-2.1.txt`, `mGBA-MPL-2.0.txt`, `melonDS-GPL-3.0.txt`, and
@@ -270,7 +291,7 @@ dist/linux-x86_64/share/libretro/info/dualboy_libretro.info
 x86-64 (`Advanced Micro Devices X86-64`), dynamically linked. The files have:
 
 ```text
-69e7f426ca6bc0faa05b05de441238c697bb89b922e105f89a21330f6468db8a  dualboy_libretro.so
+abaf5b0489f37e6b0e9864b3bfcaaabcc0687904a7a4df9eacf621c94610390b  dualboy_libretro.so
 f16a80e35815d46705b92f5ef45b117ec78a7395ee59535ee4b63570e21f83be  dualboy_libretro.info
 ```
 
@@ -306,6 +327,11 @@ Implementation plus the automated evidence above establish these components:
 - one versioned, checksummed, transactional container for both SameBoy or mGBA
   machines and link state, with battery memory separated from state rollback;
   NDS states remain disabled.
+
+The presentation-only screen swap is a later accepted requirement and
+supersedes the original historical handoff's coupled screen/controller swap.
+The public option key remains `dualboy_swap_players` solely so existing frontend
+overrides continue to load.
 
 This inventory is not a compatibility statement for retail software.
 
@@ -374,6 +400,10 @@ such error remains a potential desynchronization and should be investigated.
   from screen swap are covered by generated-ROM tests but have not been checked
   in real RetroArch or with a second physical Bluetooth controller. RetroArch or
   Steam, not the core, decides which physical device occupies each Libretro port.
+- The supplied RetroArch all-users menu-control fragment was source-audited
+  against RetroArch 1.22.2 and primary commit
+  `8039bc24666366ade168776ccffd303620fc26ed`; it has not yet been exercised in a
+  real RetroArch process or on a physical Steam Deck.
 - NDS manual states, rewind, and runahead are unsupported. Users must disable
   rewind and runahead in the per-core override.
 - NDS reports 59.8260982880808 Hz; GB/GBC/GBA retain 59.7275 Hz. NDS timing and
