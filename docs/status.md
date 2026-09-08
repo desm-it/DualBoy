@@ -62,9 +62,10 @@ content. Source inspection confirms that the registered tests cover:
 - two live mGBA instances using a generated ARM ROM, two-way SIO values, assigned
   player IDs, distinct controls/video/audio/state, dynamic save-type sizes, and a
   disk SaveRAM round trip after destroying and recreating both engines;
-- a generated GBA startup burst that queues more than 64 alternating RCNT mode
-  changes, reaches the lockstep queue capacity, logs and drops excess events
-  without dereferencing a null free-list entry, and continues running; and
+- generated GBA startup bursts containing more than 64 alternating RCNT mode
+  changes per machine, with lossless event delivery, a measured queue high-water
+  below the eight-event capacity, converged peer modes, and a subsequent
+  two-way multiplayer transfer; and
 - dynamic loading of the built Libretro core, ABI/interface registration, normal,
   subsystem, pathless, and M3U content paths, live option changes, paired state,
   SameBoy and GBA execution, and exact 32 KiB generated-ROM GBA saves.
@@ -160,19 +161,24 @@ RetroArch with `SIGSEGV`. Systemd coredump stacks consistently ended in
 the release build dereferenced `player->freeList == NULL` after the inherited
 eight-entry PR #318 queue was exhausted.
 
-The queue now contains 64 events. Enqueue operations track and debug-log their
-current/high-water depth, and capacity exhaustion emits an error with source,
-target, type, and timestamps before dropping that event rather than crashing.
-The source-generated RCNT burst regression reaches depth 64 and exercises this
-safe exhaustion path. The incompatible mGBA link-state payload is version 2;
-pre-release paired savestates made with version 1 are intentionally unsupported.
+The fixed queue now uses the original eight-event capacity, with
+current/high-water telemetry and a guarded failure path. Normal delivery is
+event-driven: publishing a mode change yields the producing core, an earlier
+queue head advances the receiving core's existing timing event, and a core that
+has crossed its frame boundary still runs while link events remain pending. A
+source-generated regression emits more than 64 alternating RCNT mode changes per
+machine, measures a queue high-water of two events, observes zero drops and
+converged modes, drains both queues, and then completes a two-way multiplayer
+transfer. The version-2 link-state envelope remains unchanged for compatibility;
+states containing at most eight pending events per machine remain readable,
+while states containing more than the runtime queue can hold are rejected.
 Battery-save formats are unchanged.
 
 The replacement core has not yet been rerun with the affected commercial games,
-so this is a verified crash-path mitigation, not yet a verified per-game fix. A
-sustained producer/consumer imbalance can now drop link events and potentially
-desynchronize the two emulated machines; queue telemetry should be reviewed if
-that occurs.
+so this is a synthetic regression fix, not yet a verified per-game fix. The
+eight-event guard still drops an event instead of dereferencing a null free-list
+entry if a future producer/consumer pattern defeats cooperative scheduling; any
+such error remains a potential desynchronization and should be investigated.
 
 ## Unverified runtime boundaries and known MVP limits
 

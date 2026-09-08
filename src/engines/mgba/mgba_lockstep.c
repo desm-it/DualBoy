@@ -25,6 +25,7 @@
 
 #define DRIVER_ID 0x6B636F4C
 #define DRIVER_STATE_VERSION 2
+#define SERIALIZED_LOCKSTEP_EVENTS 64
 #define LOCKSTEP_INTERVAL 4096
 #define UNLOCKED_INTERVAL 4096
 #define HARD_SYNC_INTERVAL 0x80000
@@ -93,7 +94,7 @@ struct DualBoyGBASIOLockstepSerializedState {
 		int32_t playerId;
 		int32_t cycleOffset;
 		uint32_t reservedPlayer[2];
-		struct DualBoyGBASIOLockstepSerializedEvent events[DUALBOY_MAX_LOCKSTEP_EVENTS];
+		struct DualBoyGBASIOLockstepSerializedEvent events[SERIALIZED_LOCKSTEP_EVENTS];
 	} player;
 
 	// playerId 0 only
@@ -108,6 +109,7 @@ struct DualBoyGBASIOLockstepSerializedState {
 };
 static_assert(offsetof(struct DualBoyGBASIOLockstepSerializedState, driver) == 0x10, "GBA lockstep savestate driver offset wrong");
 static_assert(offsetof(struct DualBoyGBASIOLockstepSerializedState, player) == 0x30, "GBA lockstep savestate player offset wrong");
+static_assert(DUALBOY_MAX_LOCKSTEP_EVENTS <= SERIALIZED_LOCKSTEP_EVENTS, "GBA lockstep runtime queue exceeds savestate capacity");
 static_assert(offsetof(struct DualBoyGBASIOLockstepSerializedState, coordinator) == 0xC40, "GBA lockstep savestate coordinator offset wrong");
 static_assert(sizeof(struct DualBoyGBASIOLockstepSerializedState) == 0xC70, "GBA lockstep savestate struct sized wrong");
 
@@ -140,6 +142,7 @@ static void _advanceCycle(struct DualBoyGBASIOLockstepCoordinator*, struct DualB
 static void _removePlayer(struct DualBoyGBASIOLockstepCoordinator*, struct DualBoyGBASIOLockstepPlayer*);
 static void _reconfigPlayers(struct DualBoyGBASIOLockstepCoordinator*);
 static int32_t _untilNextSync(struct DualBoyGBASIOLockstepCoordinator*, struct DualBoyGBASIOLockstepPlayer*);
+static void _rescheduleForQueueHead(struct DualBoyGBASIOLockstepPlayer*);
 static bool _enqueueEvent(struct DualBoyGBASIOLockstepCoordinator*, const struct DualBoyGBASIOLockstepEvent*, uint32_t target);
 static void _setData(struct DualBoyGBASIOLockstepCoordinator*, uint32_t id, struct GBASIO* sio);
 static void _setReady(struct DualBoyGBASIOLockstepCoordinator*, struct DualBoyGBASIOLockstepPlayer* activePlayer, int playerId, enum GBASIOMode mode);
@@ -612,6 +615,10 @@ static bool DualBoyGBASIOLockstepDriverLoadState(struct GBASIODriver* driver, co
 	*lastEvent = NULL;
 	player->queueDepth = i;
 	player->maxQueueDepth = i;
+	if (player->maxQueueDepth > coordinator->maxQueueDepth) {
+		coordinator->maxQueueDepth = player->maxQueueDepth;
+	}
+	_rescheduleForQueueHead(player);
 
 	if (player->playerId == 0) {
 		LOAD_32LE(coordinator->cycle, 0, &state->coordinator.cycle);
@@ -740,6 +747,13 @@ static void DualBoyGBASIOLockstepDriverSetMode(struct GBASIODriver* driver, enum
 		_setReady(coordinator, player, player->playerId, mode);
 		bool queued = _enqueueEvent(coordinator, &event,
 		                           TARGET_ALL & ~TARGET(player->playerId));
+		if (queued) {
+			/* This adapter runs all machines cooperatively on one thread. Yield
+			 * after publishing a mode change so the target can observe it before
+			 * this machine produces an arbitrarily large burst. */
+			player->driver->d.p->p->cpu->nextEvent = 0;
+			player->driver->d.p->p->earlyExit = true;
+		}
 		if (waitOnPlayers && queued) {
 			DualBoyGBASIOLockstepCoordinatorWaitOnPlayers(coordinator, player);
 		} else if (player->playerId == 0 && queued) {
@@ -1153,6 +1167,34 @@ void _hardSync(struct DualBoyGBASIOLockstepCoordinator* coordinator, struct Dual
 	}
 }
 
+static void _rescheduleForQueueHead(struct DualBoyGBASIOLockstepPlayer* player) {
+	struct DualBoyGBASIOLockstepDriver* lockstep = player->driver;
+	struct mTiming* timing = &lockstep->d.p->p->timing;
+	if (!player->queue || !mTimingIsScheduled(timing, &lockstep->event)) {
+		/* An unscheduled event may be the callback that is currently running.
+		 * Its normal tail scheduling will account for the new queue head. */
+		return;
+	}
+
+	int32_t scheduledDelay = _cycleFromBits(lockstep->event.when -
+	                                        (uint32_t) mTimingCurrentTime(timing));
+	if (scheduledDelay <= 0) {
+		return;
+	}
+	int32_t queuedDelay = _cycleDelta(player->queue->timestamp,
+	                                  DualBoyGBASIOLockstepTime(player));
+	queuedDelay = _sanitizeDelay(queuedDelay, "queued event wake", player->playerId);
+	if (queuedDelay >= scheduledDelay) {
+		return;
+	}
+
+	mLOG(GBA_SIO, DEBUG,
+	     "Advancing lockstep wake for player %i from %X to %X cycles",
+	     player->playerId, scheduledDelay, queuedDelay);
+	mTimingDeschedule(timing, &lockstep->event);
+	mTimingSchedule(timing, &lockstep->event, queuedDelay);
+}
+
 bool _enqueueEvent(struct DualBoyGBASIOLockstepCoordinator* coordinator, const struct DualBoyGBASIOLockstepEvent* event, uint32_t target) {
 	mLOG(GBA_SIO, DEBUG, "Enqueuing event of type %X from %i for target %X at timestamp %X",
 	                      event->type, event->playerId, target, event->timestamp);
@@ -1209,6 +1251,7 @@ bool _enqueueEvent(struct DualBoyGBASIOLockstepCoordinator* coordinator, const s
 			     (unsigned) DUALBOY_MAX_LOCKSTEP_EVENTS, event->type,
 			     event->playerId, event->timestamp);
 		}
+		_rescheduleForQueueHead(player);
 	}
 	return success;
 }

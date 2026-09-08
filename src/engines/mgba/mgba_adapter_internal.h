@@ -6,11 +6,13 @@
 
 #include <stdbool.h>
 
-#define DUALBOY_MGBA_LOCKSTEP_QUEUE_CAPACITY 64
+#define DUALBOY_MGBA_LOCKSTEP_QUEUE_CAPACITY 8
 
 struct dualboy_mgba_lockstep_diagnostics {
     unsigned max_queue_depth;
     unsigned dropped_events;
+    unsigned queued_events;
+    bool modes_converged;
 };
 
 /* Test/diagnostic surface; not part of the Libretro ABI. */

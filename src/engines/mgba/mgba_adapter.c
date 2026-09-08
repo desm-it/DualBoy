@@ -1110,6 +1110,24 @@ static void mgba_set_input(void *opaque_pair,
         keys);
 }
 
+static bool machine_has_pending_link_events(const struct mgba_pair *pair,
+                                            unsigned machine_index)
+{
+    const struct DualBoyGBASIOLockstepPlayer *player;
+    unsigned lockstep_id;
+
+    if (pair == NULL || !pair->coordinator_initialized || !pair->link_enabled ||
+        machine_index >= DUALBOY_MACHINE_COUNT) {
+        return false;
+    }
+    lockstep_id = pair->drivers[machine_index].lockstepId;
+    if (lockstep_id == 0U) {
+        return false;
+    }
+    player = TableLookup(&pair->coordinator.players, lockstep_id);
+    return player != NULL && player->queue != NULL;
+}
+
 static bool run_linked_frame(struct mgba_pair *pair,
                              char *error,
                              size_t error_size)
@@ -1137,7 +1155,8 @@ static bool run_linked_frame(struct mgba_pair *pair,
             struct mgba_machine *machine = &pair->machine[index];
 
             if (pair->users[index].blocked ||
-                (done[index] && blocked_count == 0U)) {
+                (done[index] && blocked_count == 0U &&
+                 !machine_has_pending_link_events(pair, index))) {
                 continue;
             }
             machine->core->runLoop(machine->core);
@@ -1166,7 +1185,7 @@ static bool run_linked_frame(struct mgba_pair *pair,
             return false;
         }
         for (index = 0U; index < DUALBOY_MACHINE_COUNT; ++index) {
-            if (!done[index]) {
+            if (!done[index] || machine_has_pending_link_events(pair, index)) {
                 all_done = false;
                 break;
             }
@@ -1831,12 +1850,45 @@ bool dualboy_mgba_get_lockstep_diagnostics(
     struct dualboy_mgba_lockstep_diagnostics *diagnostics)
 {
     const struct mgba_pair *pair = (const struct mgba_pair *)opaque_pair;
+    unsigned observer_index;
 
     if (pair == NULL || diagnostics == NULL) {
         return false;
     }
     diagnostics->max_queue_depth = pair->coordinator.maxQueueDepth;
     diagnostics->dropped_events = pair->coordinator.droppedEvents;
+    diagnostics->queued_events = 0U;
+    diagnostics->modes_converged = true;
+    if (!pair->coordinator_initialized) {
+        return true;
+    }
+    for (observer_index = 0U;
+         observer_index < (unsigned)pair->coordinator.nAttached;
+         ++observer_index) {
+        const struct DualBoyGBASIOLockstepPlayer *observer = TableLookup(
+            &pair->coordinator.players,
+            pair->coordinator.attachedPlayers[observer_index]);
+        unsigned target_index;
+
+        if (observer == NULL) {
+            diagnostics->modes_converged = false;
+            continue;
+        }
+        diagnostics->queued_events += observer->queueDepth;
+        for (target_index = 0U;
+             target_index < (unsigned)pair->coordinator.nAttached;
+             ++target_index) {
+            const struct DualBoyGBASIOLockstepPlayer *target = TableLookup(
+                &pair->coordinator.players,
+                pair->coordinator.attachedPlayers[target_index]);
+
+            if (target == NULL || target->playerId < 0 ||
+                (unsigned)target->playerId >= DUALBOY_MACHINE_COUNT ||
+                observer->otherModes[target->playerId] != target->mode) {
+                diagnostics->modes_converged = false;
+            }
+        }
+    }
     return true;
 }
 

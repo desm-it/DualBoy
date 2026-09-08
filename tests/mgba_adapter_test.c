@@ -154,10 +154,26 @@ static void patch_branch(uint8_t *rom,
     put_u32le(rom + branch_address, encoded);
 }
 
-/* Build a small ARM-state cartridge. In multiplayer mode the primary sends
- * 0x1111 and the secondary sends 0x2222. Each stores the received low byte in
- * SRAM[1], and only writes 0x5a to SRAM[2] after checking the full 16-bit word.
- * SRAM[0] records the hardware-assigned player ID; SRAM[3] records KEYINPUT. */
+static void emit_mode_burst(struct arm_builder *builder)
+{
+    size_t loop;
+    size_t loop_branch;
+
+    (void)emit_arm(builder, UINT32_C(0xE3A05028)); /* mov r5, #40 */
+    loop = builder->cursor;
+    (void)emit_arm(builder, UINT32_C(0xE3A02000)); /* mov r2, #0 */
+    (void)emit_arm(builder, UINT32_C(0xE1C423B4)); /* strh r2, [r4,#0x34] */
+    (void)emit_arm(builder, UINT32_C(0xE1C433B4)); /* strh r3, [r4,#0x34] */
+    (void)emit_arm(builder, UINT32_C(0xE2555001)); /* subs r5, r5, #1 */
+    loop_branch = emit_arm(builder, 0U);
+    patch_branch(builder->rom, loop_branch, loop, 1U); /* bne mode burst */
+}
+
+/* Build a small ARM-state cartridge. It emits a startup SIO mode burst before
+ * entering multiplayer mode, where the primary sends 0x1111 and the secondary
+ * sends 0x2222. Each stores the received low byte in SRAM[1], and only writes
+ * 0x5a to SRAM[2] after checking the full 16-bit word. SRAM[0] records the
+ * hardware-assigned player ID; SRAM[3] records KEYINPUT. */
 static bool make_test_rom(uint8_t *rom)
 {
     struct arm_builder builder = {rom, TEST_CODE_OFFSET, true};
@@ -195,11 +211,13 @@ static bool make_test_rom(uint8_t *rom)
     rom[0xB2U] = 0x96U;
     rom[0xBCU] = 0U;
 
-    /* Load IO, SIO, SRAM, and mode-3 VRAM base addresses. */
+    /* Load IO, SIO, SRAM, mode-3 VRAM, and the GPIO-mode RCNT value. */
     emit_literal_load(&builder, 0U, TEST_IO_LITERAL);
     emit_literal_load(&builder, 4U, TEST_SIO_LITERAL);
     emit_literal_load(&builder, 1U, TEST_SRAM_LITERAL);
     emit_literal_load(&builder, 7U, TEST_VRAM_LITERAL);
+    emit_literal_load(&builder, 3U, TEST_GPIO_MODE_LITERAL);
+    emit_mode_burst(&builder);
 
     /* DISPCNT = mode 3 | BG2; RCNT = 0; SIOCNT = multiplayer mode. */
     (void)emit_arm(&builder, UINT32_C(0xE3A02003)); /* mov r2, #3 */
@@ -315,6 +333,7 @@ static bool make_test_rom(uint8_t *rom)
     put_u32le(rom + TEST_VRAM_LITERAL, UINT32_C(0x06000000));
     put_u32le(rom + TEST_SEND_PRIMARY_LITERAL, UINT32_C(0x00001111));
     put_u32le(rom + TEST_SEND_SECONDARY_LITERAL, UINT32_C(0x00002222));
+    put_u32le(rom + TEST_GPIO_MODE_LITERAL, UINT32_C(0x00008000));
     memcpy(rom + TEST_SIGNATURE_OFFSET, "SRAM_V110", 9U);
 
     for (index = 0xA0U; index <= 0xBCU; ++index) {
@@ -345,14 +364,7 @@ static bool make_mode_burst_rom(uint8_t *rom)
 
     emit_literal_load(&builder, 4U, TEST_SIO_LITERAL);
     emit_literal_load(&builder, 3U, TEST_GPIO_MODE_LITERAL);
-    (void)emit_arm(&builder, UINT32_C(0xE3A05028)); /* mov r5, #40 */
-    loop = builder.cursor;
-    (void)emit_arm(&builder, UINT32_C(0xE3A02000)); /* mov r2, #0 */
-    (void)emit_arm(&builder, UINT32_C(0xE1C423B4)); /* strh r2, [r4,#0x34] */
-    (void)emit_arm(&builder, UINT32_C(0xE1C433B4)); /* strh r3, [r4,#0x34] */
-    (void)emit_arm(&builder, UINT32_C(0xE2555001)); /* subs r5, r5, #1 */
-    loop_branch = emit_arm(&builder, 0U);
-    patch_branch(rom, loop_branch, loop, 1U); /* bne mode burst */
+    emit_mode_burst(&builder);
     loop = builder.cursor;
     loop_branch = emit_arm(&builder, 0U);
     patch_branch(rom, loop_branch, loop, 14U);
@@ -423,7 +435,7 @@ static bool file_size_is(const char *path, size_t expected)
            (uintmax_t)status.st_size == (uintmax_t)expected;
 }
 
-static bool test_startup_sio_mode_burst_survives_queue_exhaustion(void)
+static bool test_startup_sio_mode_burst_is_scheduled_without_loss(void)
 {
     const struct dualboy_engine_ops *operations = dualboy_mgba_engine();
     const struct dualboy_engine_config config = {.audio_sample_rate = 48000U};
@@ -452,9 +464,12 @@ static bool test_startup_sio_mode_burst_survives_queue_exhaustion(void)
         PERSIST_CHECK(operations->run_frame(pair, error, sizeof(error)));
     }
     PERSIST_CHECK(dualboy_mgba_get_lockstep_diagnostics(pair, &diagnostics));
-    PERSIST_CHECK(diagnostics.max_queue_depth ==
+    PERSIST_CHECK(diagnostics.max_queue_depth > 0U);
+    PERSIST_CHECK(diagnostics.max_queue_depth <
                   DUALBOY_MGBA_LOCKSTEP_QUEUE_CAPACITY);
-    PERSIST_CHECK(diagnostics.dropped_events > 0U);
+    PERSIST_CHECK(diagnostics.dropped_events == 0U);
+    PERSIST_CHECK(diagnostics.queued_events == 0U);
+    PERSIST_CHECK(diagnostics.modes_converged);
     success = true;
 
 cleanup:
@@ -472,6 +487,7 @@ static bool run_linked_pair_case(void)
         .audio_sample_rate = 48000U,
     };
     struct dualboy_rom content = {0};
+    struct dualboy_mgba_lockstep_diagnostics diagnostics = {0};
     struct dualboy_video_frame video[2];
     uint8_t *rom = NULL;
     void *pair = NULL;
@@ -677,6 +693,13 @@ static bool run_linked_pair_case(void)
     CHECK(((const uint8_t *)save[1])[1] == 0x11U);
     CHECK(((const uint8_t *)save[0])[3] == 0xEEU);
     CHECK(((const uint8_t *)save[1])[3] == 0xDDU);
+    CHECK(dualboy_mgba_get_lockstep_diagnostics(pair, &diagnostics));
+    CHECK(diagnostics.max_queue_depth > 0U);
+    CHECK(diagnostics.max_queue_depth <
+          DUALBOY_MGBA_LOCKSTEP_QUEUE_CAPACITY);
+    CHECK(diagnostics.dropped_events == 0U);
+    CHECK(diagnostics.queued_events == 0U);
+    CHECK(diagnostics.modes_converged);
 
     for (index = 0U; index < 2U; ++index) {
         CHECK(operations->unserialize_machine(pair,
@@ -789,7 +812,8 @@ static bool run_linked_pair_case(void)
               (get_u32le(link_state_again + TEST_LINK_HEADER_SIZE +
                          TEST_LINK_DRIVER_FLAGS_OFFSET) &
                ~UINT32_C(0x3F8)) |
-                  (UINT32_C(65) << 3U));
+                  ((uint32_t)(DUALBOY_MGBA_LOCKSTEP_QUEUE_CAPACITY + 1U)
+                   << 3U));
     CHECK(!operations->unserialize_link(pair,
                                         link_state_again,
                                         link_state_used));
@@ -1556,7 +1580,7 @@ int main(void)
     if (!test_rejections_and_partial_teardown() ||
         !test_save_type_override_extents() ||
         !test_resolved_flash_state_into_fresh_pair() ||
-        !test_startup_sio_mode_burst_survives_queue_exhaustion() ||
+        !test_startup_sio_mode_burst_is_scheduled_without_loss() ||
         !run_linked_pair_case() ||
         !test_disk_persistence_round_trip() ||
         !test_rtc_survives_machine_state_restore()) {
