@@ -14,6 +14,7 @@ extern "C" {
 
 #include <NDS.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -493,14 +494,250 @@ bool TestWorkerDeadlineQuiescesBeforeReturning(
     return true;
 }
 
+bool BeginPendingCartSaveWrite(void *pair,
+                               unsigned machine,
+                               std::uint32_t address,
+                               const std::uint8_t *data,
+                               std::size_t size)
+{
+    auto *nds = const_cast<melonDS::NDS *>(
+        static_cast<const melonDS::NDS *>(
+            dualboy_melonds_debug_nds_object(pair, machine)));
+    if (nds == nullptr || data == nullptr || size == 0U ||
+        nds->GetNDSSaveLength() != 8192U || address >= 8192U ||
+        size > 8192U) {
+        return false;
+    }
+    melonDS::NDSCart::CartCommon *cart = nds->NDSCartSlot.GetCart();
+    if (cart == nullptr) return false;
+
+    cart->SPISelect();
+    (void)cart->SPITransmitReceive(UINT8_C(0x06));
+    cart->SPIRelease();
+    cart->SPISelect();
+    (void)cart->SPITransmitReceive(UINT8_C(0x02));
+    (void)cart->SPITransmitReceive(
+        static_cast<std::uint8_t>(address >> 8U));
+    (void)cart->SPITransmitReceive(static_cast<std::uint8_t>(address));
+    for (std::size_t index = 0U; index < size; ++index) {
+        (void)cart->SPITransmitReceive(data[index]);
+    }
+    return true;
+}
+
+bool FinishPendingCartSaveWrite(void *pair, unsigned machine)
+{
+    auto *nds = const_cast<melonDS::NDS *>(
+        static_cast<const melonDS::NDS *>(
+            dualboy_melonds_debug_nds_object(pair, machine)));
+    if (nds == nullptr) return false;
+    melonDS::NDSCart::CartCommon *cart = nds->NDSCartSlot.GetCart();
+    if (cart == nullptr) return false;
+    cart->SPIRelease();
+    return true;
+}
+
+bool TestPendingSaveTransactionSurvivesFrameBoundary(
+    const std::array<std::uint8_t, kRomSize> &first,
+    const std::array<std::uint8_t, kRomSize> &second)
+{
+    constexpr std::uint32_t kAddress = 0x0120U;
+    constexpr std::array<std::uint8_t, 16U> kPayload{{
+        0x44U, 0x42U, 0x53U, 0x56U, 0x10U, 0x32U, 0x54U, 0x76U,
+        0x98U, 0xbaU, 0xdcU, 0xfeU, 0x5aU, 0xa5U, 0xc3U, 0x3cU,
+    }};
+    PairOwner owner;
+    void *shadow[2]{};
+    std::size_t shadow_size[2]{};
+    char error[512]{};
+
+    CHECK(LoadPair(owner, first, second));
+    for (unsigned machine = 0U; machine < 2U; ++machine) {
+        CHECK(owner.operations->memory_info(owner.pair, machine,
+                                            DUALBOY_MEMORY_SAVE_RAM,
+                                            &shadow[machine],
+                                            &shadow_size[machine]));
+        CHECK(shadow[machine] != nullptr && shadow_size[machine] == 8192U);
+        CHECK(!owner.operations->memory_dirty(owner.pair, machine));
+    }
+
+    auto *nds0 = static_cast<const melonDS::NDS *>(
+        dualboy_melonds_debug_nds_object(owner.pair, 0U));
+    const auto *nds1 = static_cast<const melonDS::NDS *>(
+        dualboy_melonds_debug_nds_object(owner.pair, 1U));
+    CHECK(nds0 != nullptr && nds0->GetNDSSave() != nullptr);
+    CHECK(nds1 != nullptr && nds1->GetNDSSave() != nullptr);
+    CHECK(std::memcmp(nds0->GetNDSSave() + kAddress, kPayload.data(),
+                      kPayload.size()) != 0);
+
+    /* CartRetail updates its live EEPROM bytes before SPIRelease publishes the
+     * completed range through Platform::WriteNDSSave. Keep chip-select active
+     * so this deliberately crosses the same frame boundary as a guest write. */
+    CHECK(BeginPendingCartSaveWrite(owner.pair, 0U, kAddress,
+                                    kPayload.data(), kPayload.size()));
+    CHECK(std::memcmp(nds0->GetNDSSave() + kAddress, kPayload.data(),
+                      kPayload.size()) == 0);
+    CHECK(std::memcmp(static_cast<const std::uint8_t *>(shadow[0]) + kAddress,
+                      kPayload.data(), kPayload.size()) != 0);
+    CHECK(!owner.operations->memory_dirty(owner.pair, 0U));
+
+    CHECK(owner.operations->run_frame(owner.pair, error, sizeof(error)));
+    CHECK(std::memcmp(nds0->GetNDSSave() + kAddress, kPayload.data(),
+                      kPayload.size()) == 0);
+    CHECK(std::memcmp(static_cast<const std::uint8_t *>(shadow[0]) + kAddress,
+                      kPayload.data(), kPayload.size()) != 0);
+    CHECK(std::memcmp(nds1->GetNDSSave() + kAddress, kPayload.data(),
+                      kPayload.size()) != 0);
+
+    CHECK(FinishPendingCartSaveWrite(owner.pair, 0U));
+    CHECK(std::memcmp(static_cast<const std::uint8_t *>(shadow[0]) + kAddress,
+                      kPayload.data(), kPayload.size()) == 0);
+    CHECK(owner.operations->memory_dirty(owner.pair, 0U));
+    CHECK(!owner.operations->memory_dirty(owner.pair, 1U));
+    return true;
+}
+
+bool TestWrappedSaveCallbackUpdatesBothRanges(
+    const std::array<std::uint8_t, kRomSize> &first,
+    const std::array<std::uint8_t, kRomSize> &second)
+{
+    constexpr std::uint32_t kAddress = 8190U;
+    constexpr std::array<std::uint8_t, 8U> kPayload{{
+        0xd1U, 0xd2U, 0xd3U, 0xd4U, 0xd5U, 0xd6U, 0xd7U, 0xd8U,
+    }};
+    PairOwner owner;
+    void *shadow = nullptr;
+    std::size_t shadow_size = 0U;
+
+    CHECK(LoadPair(owner, first, second));
+    CHECK(owner.operations->memory_info(owner.pair, 0U,
+                                        DUALBOY_MEMORY_SAVE_RAM, &shadow,
+                                        &shadow_size));
+    CHECK(shadow != nullptr && shadow_size == 8192U);
+    CHECK(BeginPendingCartSaveWrite(owner.pair, 0U, kAddress,
+                                    kPayload.data(), kPayload.size()));
+    CHECK(FinishPendingCartSaveWrite(owner.pair, 0U));
+
+    const auto *nds = static_cast<const melonDS::NDS *>(
+        dualboy_melonds_debug_nds_object(owner.pair, 0U));
+    const auto *shadow_bytes = static_cast<const std::uint8_t *>(shadow);
+    CHECK(nds != nullptr && nds->GetNDSSave() != nullptr);
+    CHECK(std::memcmp(nds->GetNDSSave() + kAddress, kPayload.data(), 2U) == 0);
+    CHECK(std::memcmp(nds->GetNDSSave(), kPayload.data() + 2U, 6U) == 0);
+    CHECK(std::memcmp(shadow_bytes + kAddress, kPayload.data(), 2U) == 0);
+    CHECK(std::memcmp(shadow_bytes, kPayload.data() + 2U, 6U) == 0);
+    CHECK(owner.operations->memory_dirty(owner.pair, 0U));
+    return true;
+}
+
+bool TestMaskedFullExtentSaveCallbackUpdatesShadow(
+    const std::array<std::uint8_t, kRomSize> &first,
+    const std::array<std::uint8_t, kRomSize> &second)
+{
+    PairOwner owner;
+    std::vector<std::uint8_t> payload(8192U);
+    void *shadow = nullptr;
+    std::size_t shadow_size = 0U;
+
+    for (std::size_t index = 0U; index < payload.size(); ++index) {
+        payload[index] = static_cast<std::uint8_t>(index * 37U + 0x29U);
+    }
+    CHECK(LoadPair(owner, first, second));
+    CHECK(owner.operations->memory_info(owner.pair, 0U,
+                                        DUALBOY_MEMORY_SAVE_RAM, &shadow,
+                                        &shadow_size));
+    CHECK(shadow != nullptr && shadow_size == payload.size());
+    /* SPIRelease masks the positive 8192-byte count to zero. The adapter must
+     * still interpret the callback as one completed full-device write. */
+    CHECK(BeginPendingCartSaveWrite(owner.pair, 0U, 0U, payload.data(),
+                                    payload.size()));
+    CHECK(FinishPendingCartSaveWrite(owner.pair, 0U));
+
+    const auto *nds = static_cast<const melonDS::NDS *>(
+        dualboy_melonds_debug_nds_object(owner.pair, 0U));
+    CHECK(nds != nullptr && nds->GetNDSSave() != nullptr);
+    CHECK(std::memcmp(nds->GetNDSSave(), payload.data(), payload.size()) == 0);
+    CHECK(std::memcmp(shadow, payload.data(), payload.size()) == 0);
+    CHECK(owner.operations->memory_dirty(owner.pair, 0U));
+    owner.operations->clear_memory_dirty(owner.pair, 0U);
+
+    /* The zero mask is meaningful only at a valid in-buffer offset. */
+    dualboy_melonds_platform::WriteNDSSave(
+        nds->GetNDSSave(), static_cast<std::uint32_t>(payload.size()),
+        static_cast<std::uint32_t>(payload.size()), 0U,
+        const_cast<void *>(dualboy_melonds_debug_userdata(owner.pair, 0U)));
+    CHECK(!owner.operations->memory_dirty(owner.pair, 0U));
+    return true;
+}
+
 bool RemoveIfPresent(const std::string &path)
 {
     return path.empty() || ::unlink(path.c_str()) == 0 || access(path.c_str(), F_OK) != 0;
 }
 
+std::uint32_t SaveRecordHash(const std::uint8_t *data, std::size_t size)
+{
+    std::uint32_t hash = UINT32_C(2166136261);
+    for (std::size_t index = 0U; index < size; ++index) {
+        hash ^= data[index];
+        hash *= UINT32_C(16777619);
+    }
+    return hash;
+}
+
+std::array<std::uint8_t, 32U> MakeSaveRecord(std::uint32_t sequence,
+                                             std::uint8_t machine_tag)
+{
+    std::array<std::uint8_t, 32U> record{};
+    record[0] = 'D';
+    record[1] = 'B';
+    record[2] = 'S';
+    record[3] = 'V';
+    PutU32(record.data() + 4U, sequence);
+    record[8] = machine_tag;
+    for (std::size_t index = 9U; index < 28U; ++index) {
+        record[index] = static_cast<std::uint8_t>(
+            machine_tag + static_cast<std::uint8_t>(index * 13U));
+    }
+    PutU32(record.data() + 28U, SaveRecordHash(record.data(), 28U));
+    return record;
+}
+
+bool SaveRecordValid(const std::uint8_t *record)
+{
+    if (record == nullptr || std::memcmp(record, "DBSV", 4U) != 0) {
+        return false;
+    }
+    const std::uint32_t stored =
+        static_cast<std::uint32_t>(record[28]) |
+        (static_cast<std::uint32_t>(record[29]) << 8U) |
+        (static_cast<std::uint32_t>(record[30]) << 16U) |
+        (static_cast<std::uint32_t>(record[31]) << 24U);
+    return stored == SaveRecordHash(record, 28U);
+}
+
+bool FileMatches(const char *path, const std::vector<std::uint8_t> &expected)
+{
+    std::vector<std::uint8_t> observed(expected.size());
+    std::size_t loaded_size = 0U;
+    return path != nullptr &&
+           dualboy_read_file_filled(path, observed.data(), observed.size(),
+                                    0U, &loaded_size) ==
+               DUALBOY_PERSISTENCE_OK &&
+           loaded_size == expected.size() && observed == expected;
+}
+
+bool FileIsMissing(const char *path)
+{
+    return path != nullptr && access(path, F_OK) != 0;
+}
+
 bool TestPersistenceAcrossDestruction(
     const std::array<std::uint8_t, kRomSize> &rom)
 {
+    constexpr std::uint32_t kFirstAddress = 0x0120U;
+    constexpr std::uint32_t kSecondAddress = 0x0240U;
+    constexpr std::uint32_t kPlayerTwoAddress = 0x0360U;
     char directory_template[] = "/tmp/dualboy-melonds-XXXXXX";
     char *directory = ::mkdtemp(directory_template);
     CHECK(directory != nullptr);
@@ -510,7 +747,15 @@ bool TestPersistenceAcrossDestruction(
         {DUALBOY_PLATFORM_NDS, rom.data(), rom.size(), "persistent.nds"},
     };
     dualboy_save_paths saved_paths{};
-    std::uint8_t expected_firmware[2]{};
+    std::array<std::vector<std::uint8_t>, 2U> expected_save{{
+        std::vector<std::uint8_t>(8192U, UINT8_C(0xff)),
+        std::vector<std::uint8_t>(8192U, UINT8_C(0xff)),
+    }};
+    std::array<std::vector<std::uint8_t>, 2U> expected_firmware;
+    const auto first_record = MakeSaveRecord(UINT32_C(0x10203040), 0x11U);
+    const auto second_record = MakeSaveRecord(UINT32_C(0x50607080), 0x21U);
+    const auto player_two_record =
+        MakeSaveRecord(UINT32_C(0x90a0b0c0), 0x32U);
     const std::uint8_t expected_mac[2][6] = {
         {0x02U, 0x44U, 0x42U, 0xa5U, 0x00U, 0x00U},
         {0x02U, 0x44U, 0x42U, 0xa5U, 0x00U, 0x01U},
@@ -527,11 +772,28 @@ bool TestPersistenceAcrossDestruction(
         CHECK(dualboy_save_manager_init(&manager, &session, directory, error,
                                         sizeof(error)));
         saved_paths = manager.paths;
+        CHECK(manager.write_owner);
+        CHECK(manager.write_lock_count == 4U);
+        CHECK(std::strcmp(saved_paths.sram[0], saved_paths.sram[1]) != 0);
+        CHECK(std::strcmp(saved_paths.firmware[0],
+                          saved_paths.firmware[1]) != 0);
+        CHECK(std::strstr(saved_paths.sram[1], ".srm.2") != nullptr);
+        CHECK(std::strstr(saved_paths.firmware[1], ".firmware.bin.2") !=
+              nullptr);
         for (unsigned machine = 0U; machine < 2U; ++machine) {
             void *save = nullptr;
             void *firmware = nullptr;
+            void *frontend_memory = reinterpret_cast<void *>(UINTPTR_MAX);
             std::size_t save_size = 0U;
             std::size_t firmware_size = 0U;
+            std::size_t frontend_size = SIZE_MAX;
+            CHECK(manager.core_managed[machine][DUALBOY_MEMORY_SAVE_RAM]);
+            CHECK(!manager.core_managed[machine][DUALBOY_MEMORY_RTC]);
+            CHECK(manager.core_managed[machine][DUALBOY_MEMORY_FIRMWARE]);
+            CHECK(!dualboy_save_manager_frontend_memory(
+                &manager, &session, machine, DUALBOY_MEMORY_SAVE_RAM,
+                &frontend_memory, &frontend_size));
+            CHECK(frontend_memory == nullptr && frontend_size == 0U);
             CHECK(session.engine->memory_info(session.pair, machine,
                                               DUALBOY_MEMORY_SAVE_RAM, &save,
                                               &save_size));
@@ -539,30 +801,55 @@ bool TestPersistenceAcrossDestruction(
                                               DUALBOY_MEMORY_FIRMWARE,
                                               &firmware, &firmware_size));
             CHECK(save_size == 8192U && firmware_size == kFirmwareSize);
-            CHECK(dualboy_melonds_debug_write_cart_save(
-                session.pair, machine, 17U,
-                static_cast<std::uint8_t>(0x31U + machine)));
-            CHECK(static_cast<std::uint8_t *>(save)[17U] ==
-                  static_cast<std::uint8_t>(0x31U + machine));
-            CHECK(session.engine->memory_dirty(session.pair, machine));
-            expected_firmware[machine] = static_cast<std::uint8_t>(
-                static_cast<std::uint8_t *>(firmware)[0x1000U] ^
-                static_cast<std::uint8_t>(0x41U + machine));
-            static_cast<std::uint8_t *>(firmware)[0x1000U] =
-                expected_firmware[machine];
+            CHECK(std::all_of(static_cast<std::uint8_t *>(save),
+                              static_cast<std::uint8_t *>(save) + save_size,
+                              [](std::uint8_t value) {
+                                  return value == UINT8_C(0xff);
+                              }));
+            static_cast<std::uint8_t *>(firmware)[0x1000U] ^=
+                static_cast<std::uint8_t>(0x41U + machine);
             CHECK(dualboy_melonds_debug_set_firmware_mac(
                 session.pair, machine, expected_mac[machine]));
+            expected_firmware[machine].assign(
+                static_cast<std::uint8_t *>(firmware),
+                static_cast<std::uint8_t *>(firmware) + firmware_size);
         }
-        CHECK(dualboy_save_manager_flush(&manager, &session, true, error,
-                                         sizeof(error)));
+
+        CHECK(BeginPendingCartSaveWrite(session.pair, 0U, kFirstAddress,
+                                        first_record.data(),
+                                        first_record.size()));
+        CHECK(session.engine->run_frame(session.pair, error, sizeof(error)));
+        const auto *live = static_cast<const melonDS::NDS *>(
+            dualboy_melonds_debug_nds_object(session.pair, 0U));
+        CHECK(live != nullptr && live->GetNDSSave() != nullptr);
+        CHECK(std::memcmp(live->GetNDSSave() + kFirstAddress,
+                          first_record.data(), first_record.size()) == 0);
+        CHECK(FinishPendingCartSaveWrite(session.pair, 0U));
+        std::memcpy(expected_save[0].data() + kFirstAddress,
+                    first_record.data(), first_record.size());
+
+        CHECK(FileIsMissing(saved_paths.sram[0]));
+        CHECK(FileIsMissing(saved_paths.sram[1]));
+        for (unsigned frame = 1U;
+             frame < DUALBOY_SAVE_FLUSH_INTERVAL_FRAMES; ++frame) {
+            CHECK(dualboy_save_manager_tick(&manager, &session, error,
+                                            sizeof(error)));
+        }
+        CHECK(FileIsMissing(saved_paths.sram[0]));
+        CHECK(FileIsMissing(saved_paths.sram[1]));
+        CHECK(dualboy_save_manager_tick(&manager, &session, error,
+                                        sizeof(error)));
+        CHECK(FileMatches(saved_paths.sram[0], expected_save[0]));
+        CHECK(FileIsMissing(saved_paths.sram[1]));
+        CHECK(FileMatches(saved_paths.firmware[0], expected_firmware[0]));
+        CHECK(FileMatches(saved_paths.firmware[1], expected_firmware[1]));
         dualboy_save_manager_deinit(&manager);
         dualboy_session_unload(&session);
     }
 
-    CHECK(std::strcmp(saved_paths.sram[0], saved_paths.sram[1]) != 0);
-    CHECK(std::strcmp(saved_paths.firmware[0], saved_paths.firmware[1]) != 0);
-    CHECK(std::strstr(saved_paths.sram[1], ".srm.2") != nullptr);
-    CHECK(std::strstr(saved_paths.firmware[1], ".firmware.bin.2") != nullptr);
+    CHECK(FileIsMissing(saved_paths.sram[1]));
+    CHECK(access((std::string(saved_paths.sram[1]) + ".dualboy.lock").c_str(),
+                 F_OK) == 0);
 
     {
         dualboy_session session{};
@@ -584,21 +871,92 @@ bool TestPersistenceAcrossDestruction(
             CHECK(session.engine->memory_info(session.pair, machine,
                                               DUALBOY_MEMORY_FIRMWARE,
                                               &firmware, &firmware_size));
-            CHECK(static_cast<std::uint8_t *>(save)[17U] ==
-                  static_cast<std::uint8_t>(0x31U + machine));
+            CHECK(save_size == expected_save[machine].size());
+            CHECK(std::memcmp(save, expected_save[machine].data(), save_size) ==
+                  0);
             const auto *nds = static_cast<const melonDS::NDS *>(
                 dualboy_melonds_debug_nds_object(session.pair, machine));
             CHECK(nds != nullptr && nds->GetNDSSave() != nullptr);
-            CHECK(nds->GetNDSSave()[17U] ==
-                  static_cast<std::uint8_t>(0x31U + machine));
-            CHECK(static_cast<std::uint8_t *>(firmware)[0x1000U] ==
-                  expected_firmware[machine]);
+            CHECK(nds->GetNDSSaveLength() == save_size);
+            CHECK(std::memcmp(nds->GetNDSSave(), expected_save[machine].data(),
+                              save_size) == 0);
+            CHECK(firmware_size == expected_firmware[machine].size());
+            CHECK(std::memcmp(firmware, expected_firmware[machine].data(),
+                              firmware_size) == 0);
             std::uint8_t firmware_mac[6]{};
             CHECK(dualboy_melonds_debug_firmware_mac(
                 session.pair, machine, firmware_mac));
             CHECK(std::memcmp(firmware_mac, expected_mac[machine],
                               sizeof(firmware_mac)) == 0);
         }
+
+        CHECK(SaveRecordValid(expected_save[0].data() + kFirstAddress));
+        CHECK(BeginPendingCartSaveWrite(session.pair, 0U, kSecondAddress,
+                                        second_record.data(),
+                                        second_record.size()));
+        CHECK(BeginPendingCartSaveWrite(session.pair, 1U, kPlayerTwoAddress,
+                                        player_two_record.data(),
+                                        player_two_record.size()));
+        CHECK(session.engine->run_frame(session.pair, error, sizeof(error)));
+        for (unsigned machine = 0U; machine < 2U; ++machine) {
+            const auto *nds = static_cast<const melonDS::NDS *>(
+                dualboy_melonds_debug_nds_object(session.pair, machine));
+            const std::uint32_t address =
+                machine == 0U ? kSecondAddress : kPlayerTwoAddress;
+            const auto &record =
+                machine == 0U ? second_record : player_two_record;
+            CHECK(nds != nullptr && nds->GetNDSSave() != nullptr);
+            CHECK(std::memcmp(nds->GetNDSSave() + address, record.data(),
+                              record.size()) == 0);
+            CHECK(FinishPendingCartSaveWrite(session.pair, machine));
+            std::memcpy(expected_save[machine].data() + address,
+                        record.data(), record.size());
+        }
+        CHECK(dualboy_save_manager_flush(&manager, &session, true, error,
+                                         sizeof(error)));
+        CHECK(FileMatches(saved_paths.sram[0], expected_save[0]));
+        CHECK(FileMatches(saved_paths.sram[1], expected_save[1]));
+        dualboy_save_manager_deinit(&manager);
+        dualboy_session_unload(&session);
+    }
+
+    {
+        dualboy_session session{};
+        dualboy_save_manager manager{};
+        dualboy_session_init(&session);
+        CHECK(dualboy_session_load(&session, dualboy_melonds_engine(), &config,
+                                   content, DUALBOY_LOAD_NORMAL, false, error,
+                                   sizeof(error)));
+        CHECK(dualboy_save_manager_init(&manager, &session, directory, error,
+                                        sizeof(error)));
+        for (unsigned machine = 0U; machine < 2U; ++machine) {
+            void *save = nullptr;
+            void *firmware = nullptr;
+            std::size_t save_size = 0U;
+            std::size_t firmware_size = 0U;
+            CHECK(session.engine->memory_info(session.pair, machine,
+                                              DUALBOY_MEMORY_SAVE_RAM, &save,
+                                              &save_size));
+            CHECK(session.engine->memory_info(session.pair, machine,
+                                              DUALBOY_MEMORY_FIRMWARE,
+                                              &firmware, &firmware_size));
+            const auto *nds = static_cast<const melonDS::NDS *>(
+                dualboy_melonds_debug_nds_object(session.pair, machine));
+            CHECK(save_size == expected_save[machine].size());
+            CHECK(std::memcmp(save, expected_save[machine].data(), save_size) ==
+                  0);
+            CHECK(nds != nullptr && nds->GetNDSSaveLength() == save_size);
+            CHECK(std::memcmp(nds->GetNDSSave(), expected_save[machine].data(),
+                              save_size) == 0);
+            CHECK(firmware_size == expected_firmware[machine].size());
+            CHECK(std::memcmp(firmware, expected_firmware[machine].data(),
+                              firmware_size) == 0);
+        }
+        CHECK(SaveRecordValid(expected_save[0].data() + kFirstAddress));
+        CHECK(SaveRecordValid(expected_save[0].data() + kSecondAddress));
+        CHECK(SaveRecordValid(expected_save[1].data() + kPlayerTwoAddress));
+        CHECK(!session.engine->memory_dirty(session.pair, 0U));
+        CHECK(!session.engine->memory_dirty(session.pair, 1U));
         dualboy_save_manager_deinit(&manager);
         dualboy_session_unload(&session);
     }
@@ -716,6 +1074,9 @@ int main()
         !TestPartialAndRepeatedCleanup(first) ||
         !TestGeneratedFirmwareValidation(first, second) ||
         !TestWorkerDeadlineQuiescesBeforeReturning(first, second) ||
+        !TestPendingSaveTransactionSurvivesFrameBoundary(first, second) ||
+        !TestWrappedSaveCallbackUpdatesBothRanges(first, second) ||
+        !TestMaskedFullExtentSaveCallbackUpdatesShadow(first, second) ||
         !TestPersistenceAcrossDestruction(first) ||
         !TestDuplicatePersistedFirmwareMacRepair(first, second)) {
         return EXIT_FAILURE;

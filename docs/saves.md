@@ -125,6 +125,15 @@ and melonDS write callbacks mark it for the ordinary atomic flush path. The
 generated identities use distinct locally administered MAC addresses ending in
 `00` and `01`.
 
+Each NDS machine has two views of cartridge SaveRAM with different jobs. The
+buffer inside melonDS is the live cartridge state. DualBoy's `save_shadow` is a
+complete disk-facing image updated by the completed ranges reported through
+melonDS's `WriteNDSSave` callback. Loading a file or explicitly resetting a
+machine copies the shadow into melonDS. During normal emulation, data travels
+only in the other direction, from a completed melonDS callback into the shadow.
+A byte difference by itself is not an external edit: it can be a real cartridge
+write that has started but has not yet released chip-select.
+
 ## Exact persistent extents
 
 ### NDS SaveRAM and firmware
@@ -230,6 +239,17 @@ unload/deinit. A
 hash suppresses writes when the tracked bytes did not change. For unresolved
 mGBA extents, a full-capacity baseline is retained so the first guest write is
 recognized when detection becomes known.
+
+For NDS SaveRAM, periodic and forced checks hash only the callback-committed
+shadow. A cartridge transaction may update melonDS's live SRAM over more than
+one frame; those in-progress bytes are neither overwritten from the shadow nor
+published early. When melonDS releases the transaction, its callback copies the
+completed range into the shadow, including a write that wraps from the end of
+SaveRAM to its beginning and melonDS's zero-masked notification for an exactly
+full-device write. Reset, unload, or abrupt termination before that callback
+keeps the last completed save state rather than persisting a partial transaction.
+DualBoy does not inspect or repair game-specific save formats, so an
+already-corrupt file remains the user's responsibility to restore or replace.
 
 Each changed region is written to a uniquely created temporary file in the same
 directory. DualBoy writes all bytes, calls `fsync` on the temporary file,

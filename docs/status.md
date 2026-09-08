@@ -37,23 +37,23 @@ digest-pinned `linux/amd64` container on an ARM64 Docker host:
 ```text
 make test-linux-x86_64
 100% tests passed, 0 tests failed out of 10
-Total Test time (real) = 58.94 sec
-sameboy_adapter_unit: 8.79 seconds
-mgba_adapter_unit: 4.92 seconds
-melonds_adapter_unit: 10.67 seconds
-libretro_abi_smoke: 16.82 seconds
-libretro_nds_pointer_integration: 17.13 seconds
+Total Test time (real) = 61.64 sec
+sameboy_adapter_unit: 8.65 seconds
+mgba_adapter_unit: 4.89 seconds
+melonds_adapter_unit: 13.99 seconds
+libretro_abi_smoke: 16.54 seconds
+libretro_nds_pointer_integration: 16.78 seconds
 ```
 
 The ten passing tests were `frontend_unit`, `session_unit`,
 `state_unit`, `persistence_unit`, `save_manager_unit`,
 `sameboy_adapter_unit`, `mgba_adapter_unit`, `melonds_adapter_unit`,
 `libretro_abi_smoke`, and `libretro_nds_pointer_integration`. The preceding
-explicit `make linux-x86_64` release build also completed successfully with
+`linux-x86_64` prerequisite release build also completed successfully with
 `DUALBOY_WARNINGS_AS_ERRORS=ON`.
 
 A native Linux ARM64 RelWithDebInfo diagnostic configured with warnings as
-errors, rebuilt the current source, and passed the same 10/10 tests in 6.20
+errors, rebuilt the current source, and passed the same 10/10 tests in 6.40
 seconds. `git submodule update --init --recursive` succeeded and reported the
 four exact revisions in `THIRD_PARTY.md`; `third_party/melonDS` remained clean.
 
@@ -106,6 +106,10 @@ Source inspection of the current working tree shows:
 - engine debug messages discarded at the platform entrypoint before formatting
   or allocation, while info, warning, and error messages still reach the
   frontend;
+- callback-committed NDS cartridge persistence: live melonDS SRAM may differ
+  while an SPI transaction is in progress, completed callback ranges flow into
+  the disk-facing shadow (including end-of-buffer wrap), and stale shadow bytes
+  are applied only at explicit load/reset boundaries;
 - normal same-ROM, subsystem, and M3U NDS selection with strict header detection
   and mixed-family rejection; and
 - core-managed independent `.srm` and `.firmware.bin` files, with collision
@@ -176,10 +180,15 @@ content. The passing native and x86-64 runs above exercised:
   info, warning, and error forwarding retained;
 - a deterministic held-worker deadline test proving that a timed-out frame does
   not return before both workers quiesce, that the pair is poisoned, and that
-  memory access and destruction are safe afterward; and
-- distinct melonDS cartridge saves written through a real upstream 8 KiB EEPROM
-  SPI transaction plus firmware sentinels flushed to collision-safe files, both
-  engines destroyed, and the bytes loaded into recreated live engine objects.
+  memory access and destruction are safe afterward;
+- a real upstream 8 KiB EEPROM transaction left open across a DualBoy frame,
+  proving live bytes remain unpublished until `SPIRelease` and then reach the
+  shadow through `Platform::WriteNDSSave`, plus a wrapped callback covering the
+  physical tail and prefix and a zero-masked full-device callback; and
+- the exact 300-frame periodic save boundary, a forced flush, full 8 KiB disk
+  image comparisons, a present Player 1 save with an absent `.srm.2`, distinct
+  checksummed records for both machines, independent firmware images, and two
+  destroy/recreate cycles restoring byte-identical shadow and live SRAM.
 
 These are synthetic-harness results, not retail-game or real-RetroArch
 compatibility claims. The generated cartridges and ARM instructions are authored
@@ -189,11 +198,11 @@ used.
 
 The disk round trips prove more than buffer independence. Generated guest code
 changes SameBoy and mGBA SaveRAM. For NDS, a test-only hook drives the real
-upstream `CartRetail` EEPROM SPI protocol and its `Platform::WriteNDSSave`
-callback; it is not an ARM guest save program. Distinct per-machine bytes are
-flushed, both engine pairs are destroyed, new pairs are created, and a new save
-manager loads the expected bytes from separate files. The SameBoy case also
-checks its separate RTC regions.
+upstream `CartRetail` EEPROM SPI protocol through the adapter test interface and
+its real `Platform::WriteNDSSave` callback; it is not an ARM guest save program.
+Distinct per-machine records are flushed, both engine pairs are destroyed, new
+pairs are created, and a new save manager loads the complete expected images
+from separate files. The SameBoy case also checks its separate RTC regions.
 
 ## Current sanitizer, symbol, and package results
 
@@ -202,7 +211,7 @@ The current source completed the native ARM64 ASan+UBSan command:
 ```text
 make asan-linux-native
 100% tests passed, 0 tests failed out of 10
-Total Test time (real) = 108.64 sec
+Total Test time (real) = 120.51 sec
 ```
 
 This is not a clean UBSan claim. CTest returned success and the log contains no
@@ -221,6 +230,8 @@ address-space setup is unreliable.
 ```text
 Libretro export check passed for build-linux-x86_64/dualboy_libretro.so
 ```
+
+`git diff --check` also passed on the final source and documentation changes.
 
 The current release build was installed with:
 
@@ -248,7 +259,7 @@ dist/linux-x86_64/share/libretro/info/dualboy_libretro.info
 x86-64 (`Advanced Micro Devices X86-64`), dynamically linked. The files have:
 
 ```text
-a64c0958d8e035ac009efc0c3c23068475ebac048f825bf273c224427a4574e2  dualboy_libretro.so
+69e7f426ca6bc0faa05b05de441238c697bb89b922e105f89a21330f6468db8a  dualboy_libretro.so
 f16a80e35815d46705b92f5ef45b117ec78a7395ee59535ee4b63570e21f83be  dualboy_libretro.info
 ```
 
@@ -319,6 +330,15 @@ such error remains a potential desynchronization and should be investigated.
 - No NDS content has yet been loaded in a real RetroArch process or on a physical
   Steam Deck. The earlier Deck launch and GBA crash investigation do not validate
   the NDS path.
+- The reported Pokémon Diamond save has not been rerun on its Steam Deck and was
+  not imported into the test environment. The synthetic regression proves a
+  general `CartRetail` corruption mechanism. Source inspection shows that the
+  observed 512 KiB FLASH extent uses the same write-before-`SPIRelease` ordering,
+  but this is an inference rather than direct commercial runtime validation. It
+  does not prove that the existing file is repaired or that every cause of its
+  invalid checksums is resolved. DualBoy deliberately has no game-specific
+  repair logic; an already-corrupt save must be restored or replaced outside
+  the core.
 - No source-built or explicitly redistributable guest program has completed an
   emulated NDS local-wireless session. The generated ARM7 fixture powers on both
   emulated Wi-Fi devices and reaches `MP_Begin`, while a separate adapter test

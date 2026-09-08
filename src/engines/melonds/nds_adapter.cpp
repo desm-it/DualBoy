@@ -707,23 +707,19 @@ static bool RunFrame(void *opaque_pair, char *error, std::size_t error_size)
         deadline = pair->frame_deadline;
     }
 
-    for (MachineContext &machine : pair->machines) {
-        if (!machine.save_shadow.empty() &&
-            machine.nds->GetNDSSave() != nullptr &&
-            (machine.nds->GetNDSSaveLength() != machine.save_shadow.size() ||
-             std::memcmp(machine.nds->GetNDSSave(), machine.save_shadow.data(),
-                         machine.save_shadow.size()) != 0)) {
-            if (machine.nds->GetNDSSaveLength() != machine.save_shadow.size()) {
-                SetError(error, error_size,
-                         "machine %u cartridge save extent changed unexpectedly",
-                         machine.id + 1U);
-                return false;
-            }
-            machine.save_dirty.store(false, std::memory_order_release);
-            machine.nds->SetNDSSave(machine.save_shadow.data(),
-                                    static_cast<std::uint32_t>(
-                                        machine.save_shadow.size()));
-            machine.save_dirty.store(false, std::memory_order_release);
+    /* save_shadow is the complete image updated by WriteNDSSave's committed
+     * ranges, not a per-frame authority. CartRetail can modify live SRAM over
+     * multiple frames before SPIRelease publishes that transaction. Only
+     * validate topology here; Reset owns explicit shadow-to-live loads. */
+    for (const MachineContext &machine : pair->machines) {
+        const std::size_t live_size = machine.nds->GetNDSSaveLength();
+        const std::uint8_t *const live_save = machine.nds->GetNDSSave();
+        if (live_size != machine.save_shadow.size() ||
+            (live_size != 0U && live_save == nullptr)) {
+            SetError(error, error_size,
+                     "machine %u cartridge save extent changed unexpectedly",
+                     machine.id + 1U);
+            return false;
         }
     }
 
@@ -1078,14 +1074,30 @@ void WriteNDSSave(const std::uint8_t *data,
 {
     MachineContext *context = ContextFromUserdata(userdata);
     if (context == nullptr || data == nullptr ||
-        context->save_shadow.size() != size || offset > size ||
-        length > size - offset || length == 0U) {
+        context->save_shadow.size() != size || size == 0U || offset >= size) {
         return;
     }
-    std::uint8_t *const destination = context->save_shadow.data() + offset;
-    const std::uint8_t *const source = data + offset;
-    if (destination != source) {
-        std::memmove(destination, source, length);
+    /* CartRetail::SPIRelease masks its positive byte count by size - 1.
+     * Because every supported extent is a power of two, zero therefore means
+     * that a whole-device transaction completed, not that nothing changed. */
+    const std::uint32_t committed_length = length == 0U ? size : length;
+    const std::uint32_t tail_length =
+        std::min<std::uint32_t>(committed_length, size - offset);
+    if (tail_length != 0U) {
+        std::uint8_t *const destination =
+            context->save_shadow.data() + offset;
+        const std::uint8_t *const source = data + offset;
+        if (destination != source) {
+            std::memmove(destination, source, tail_length);
+        }
+    }
+    /* Match upstream SaveManager::RequestFlush: cartridge writes can wrap at
+     * the physical end of SaveRAM, so one callback may commit a tail and a
+     * prefix. The live buffer already contains both final ranges. */
+    const std::uint32_t wrapped_length =
+        std::min<std::uint32_t>(committed_length - tail_length, size);
+    if (wrapped_length != 0U && context->save_shadow.data() != data) {
+        std::memmove(context->save_shadow.data(), data, wrapped_length);
     }
     context->save_dirty.store(true, std::memory_order_release);
 }

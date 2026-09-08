@@ -182,7 +182,10 @@ never renamed or deleted. Same-ROM loads use collision-safe `.srm.2` and
 address. Persisted NDS firmware must be an intact 128 KiB DualBoy-generated
 image; malformed content is rejected before melonDS sees it. Core-managed saves
 use atomic replacement and per-file advisory locks, and a second process that
-cannot obtain them loads those regions read-only.
+cannot obtain them loads those regions read-only. NDS persistence publishes
+only cartridge transactions completed by melonDS; an in-progress SPI write can
+cross frame boundaries without stale disk-shadow bytes replacing its live
+state. DualBoy does not repair already-corrupt or game-specific save formats.
 
 Save states are separate RetroArch-managed files. For GB/GBC/GBA, a DualBoy state
 contains both machines and link state, but loading it deliberately does not roll
