@@ -151,9 +151,13 @@ emits only machine 0 / Player 1 audio.
 For NDS touch, RetroArch pointer contacts are routed by the displayed bottom
 screen, including successive pointer indices for two simultaneous contacts. The
 first contact landing on each DS wins because the hardware is single-touch. As
-an independent controller fallback, hold R3 for that player and move the right
-analog stick. Whether a particular Steam Deck input driver preserves multiple
-pointer indices still requires physical validation.
+an independent controller fallback, move that player's right analog stick to
+aim and hold R3 to press the touchscreen. Stick movement shows a high-contrast
+black-and-white reticle with a cyan Player 1 or orange Player 2 center; it hides
+after three seconds without meaningful stick movement. A physical pointer
+contact temporarily takes precedence over the corresponding stick reticle.
+Whether a particular Steam Deck input driver preserves multiple pointer indices
+still requires physical validation.
 
 ## Core options
 

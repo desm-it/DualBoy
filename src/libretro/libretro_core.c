@@ -7,6 +7,7 @@
 #include "frontend/save_manager.h"
 #include "frontend/session.h"
 #include "frontend/state.h"
+#include "frontend/touch_cursor.h"
 #include "libretro/options.h"
 
 #include <libretro.h>
@@ -38,6 +39,8 @@
 #define DUALBOY_NDS_SCREEN_WIDTH 256U
 #define DUALBOY_NDS_SCREEN_HEIGHT 192U
 #define DUALBOY_POINTER_CONTACT_LIMIT 16U
+#define DUALBOY_PLAYER1_CURSOR_COLOR UINT32_C(0x0000dfff)
+#define DUALBOY_PLAYER2_CURSOR_COLOR UINT32_C(0x00ffb000)
 
 struct dualboy_libretro_context {
     retro_environment_t environment;
@@ -51,10 +54,13 @@ struct dualboy_libretro_context {
     struct dualboy_save_manager saves;
     struct dualboy_options options;
     struct dualboy_geometry last_geometry;
+    struct dualboy_touch_cursor touch_cursors[DUALBOY_MACHINE_COUNT];
     unsigned port_devices[DUALBOY_MACHINE_COUNT];
     char system_directory[DUALBOY_PATH_CAPACITY];
     char save_directory[DUALBOY_PATH_CAPACITY];
     int16_t audio_buffer[DUALBOY_AUDIO_BUFFER_FRAMES * 2U];
+    uint32_t presentation_buffer[DUALBOY_MAX_COMPOSITE_PIXELS];
+    retro_perf_get_time_usec_t get_time_usec;
     bool frontend_link_value;
     bool frontend_link_known;
     bool pending_link_value;
@@ -223,8 +229,10 @@ static void engine_log(void *context,
 static void refresh_frontend_services(void)
 {
     struct retro_log_callback log_callback = {NULL};
+    struct retro_perf_callback perf_callback = {0};
 
     core.frontend_log = NULL;
+    core.get_time_usec = NULL;
     core.input_bitmasks = false;
     if (core.environment == NULL) {
         return;
@@ -234,6 +242,10 @@ static void refresh_frontend_services(void)
     }
     core.input_bitmasks =
         core.environment(RETRO_ENVIRONMENT_GET_INPUT_BITMASKS, NULL);
+    if (core.environment(RETRO_ENVIRONMENT_GET_PERF_INTERFACE,
+                         &perf_callback)) {
+        core.get_time_usec = perf_callback.get_time_usec;
+    }
 }
 
 static void register_environment_interfaces(void)
@@ -394,6 +406,15 @@ static void synchronize_fastforward_policy(void)
     }
 }
 
+static void reset_touch_cursors(void)
+{
+    unsigned port;
+
+    for (port = 0U; port < DUALBOY_MACHINE_COUNT; ++port) {
+        dualboy_touch_cursor_reset(&core.touch_cursors[port]);
+    }
+}
+
 static void unload_current(void)
 {
     char error[DUALBOY_ERROR_CAPACITY] = {0};
@@ -407,6 +428,7 @@ static void unload_current(void)
     }
     dualboy_save_manager_deinit(&core.saves);
     dualboy_session_unload(&core.session);
+    reset_touch_cursors();
     core.geometry_valid = false;
 }
 
@@ -417,6 +439,7 @@ static void discard_current(void)
     set_fastforward_inhibition(false);
     dualboy_save_manager_deinit(&core.saves);
     dualboy_session_unload(&core.session);
+    reset_touch_cursors();
     core.geometry_valid = false;
 }
 
@@ -810,39 +833,83 @@ static bool nds_session_loaded(void)
            core.session.roms[0].rom.platform == DUALBOY_PLATFORM_NDS;
 }
 
-static struct dualboy_machine_input read_port_input(unsigned port)
+static bool touch_cursor_time(uint64_t *now_usec)
+{
+    retro_time_t current;
+
+    if (now_usec == NULL || core.get_time_usec == NULL) {
+        return false;
+    }
+    current = core.get_time_usec();
+    if (current < 0) {
+        return false;
+    }
+    *now_usec = (uint64_t)current;
+    return true;
+}
+
+static struct dualboy_machine_input read_port_input(unsigned port,
+                                                    bool time_available,
+                                                    uint64_t now_usec)
 {
     struct dualboy_machine_input input = {0U, false, 0U, 0U};
     const uint16_t button_mask = read_port_button_mask(port);
 
     input.buttons = button_mask & UINT16_C(0x0fff);
     if (nds_session_loaded() && core.input_state != NULL &&
-        (button_mask & (UINT16_C(1) << RETRO_DEVICE_ID_JOYPAD_R3)) != 0U) {
+        port_has_controller(port)) {
         const int16_t analog_x = core.input_state(
             port, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT,
             RETRO_DEVICE_ID_ANALOG_X);
         const int16_t analog_y = core.input_state(
             port, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT,
             RETRO_DEVICE_ID_ANALOG_Y);
-
-        input.touch_active = true;
-        input.touch_x = (uint16_t)normalized_coordinate(
+        const bool pressed =
+            (button_mask &
+             (UINT16_C(1) << RETRO_DEVICE_ID_JOYPAD_R3)) != 0U;
+        const uint16_t touch_x = (uint16_t)normalized_coordinate(
             analog_x, DUALBOY_NDS_SCREEN_WIDTH);
-        input.touch_y = (uint16_t)normalized_coordinate(
+        const uint16_t touch_y = (uint16_t)normalized_coordinate(
             analog_y, DUALBOY_NDS_SCREEN_HEIGHT);
+        const bool initially_deflected =
+            touch_x + DUALBOY_TOUCH_CURSOR_MOTION_PIXELS <=
+                DUALBOY_NDS_SCREEN_WIDTH / 2U ||
+            touch_x >= DUALBOY_NDS_SCREEN_WIDTH / 2U +
+                           DUALBOY_TOUCH_CURSOR_MOTION_PIXELS ||
+            touch_y + DUALBOY_TOUCH_CURSOR_MOTION_PIXELS <=
+                DUALBOY_NDS_SCREEN_HEIGHT / 2U ||
+            touch_y >= DUALBOY_NDS_SCREEN_HEIGHT / 2U +
+                           DUALBOY_TOUCH_CURSOR_MOTION_PIXELS;
+
+        dualboy_touch_cursor_update(&core.touch_cursors[port], touch_x,
+                                    touch_y, initially_deflected, pressed,
+                                    time_available, now_usec);
+
+        if (pressed) {
+            input.touch_active = true;
+            input.touch_x = touch_x;
+            input.touch_y = touch_y;
+        }
+    } else if (port < DUALBOY_MACHINE_COUNT) {
+        dualboy_touch_cursor_reset(&core.touch_cursors[port]);
     }
     return input;
 }
 
 static void apply_pointer_contacts(
     struct dualboy_machine_input inputs[DUALBOY_MACHINE_COUNT],
-    const struct dualboy_compositor_config *display)
+    const struct dualboy_compositor_config *display,
+    bool assigned[DUALBOY_MACHINE_COUNT])
 {
     struct dualboy_video_frame frames[DUALBOY_MACHINE_COUNT];
     struct dualboy_geometry geometry;
-    bool assigned[DUALBOY_MACHINE_COUNT] = {false, false};
     unsigned index;
 
+    if (assigned == NULL) {
+        return;
+    }
+    assigned[0] = false;
+    assigned[1] = false;
     if (!nds_session_loaded() || core.input_state == NULL || display == NULL ||
         core.session.engine == NULL || core.session.engine->video_frame == NULL ||
         !core.session.engine->video_frame(core.session.pair, 0U, &frames[0]) ||
@@ -885,6 +952,84 @@ static void apply_pointer_contacts(
             (uint16_t)(machine_y - DUALBOY_NDS_SCREEN_HEIGHT);
         assigned[port] = true;
     }
+}
+
+static void publish_video_with_touch_cursors(
+    const bool pointer_assigned[DUALBOY_MACHINE_COUNT])
+{
+    static const uint32_t accent[DUALBOY_MACHINE_COUNT] = {
+        DUALBOY_PLAYER1_CURSOR_COLOR,
+        DUALBOY_PLAYER2_CURSOR_COLOR,
+    };
+    const struct dualboy_video_frame *composite = &core.session.composite;
+    const uint32_t *pixels;
+    size_t pitch;
+
+    if (core.video == NULL || composite->pixels == NULL ||
+        composite->width == 0U || composite->height == 0U ||
+        composite->width > DUALBOY_MAX_COMPOSITE_WIDTH ||
+        composite->height > DUALBOY_MAX_COMPOSITE_HEIGHT ||
+        composite->pitch < (size_t)composite->width * sizeof(uint32_t)) {
+        return;
+    }
+
+    pixels = composite->pixels;
+    pitch = composite->pitch;
+    if (nds_session_loaded()) {
+        struct dualboy_video_frame frames[DUALBOY_MACHINE_COUNT];
+        unsigned cursor_x[DUALBOY_MACHINE_COUNT] = {0U, 0U};
+        unsigned cursor_y[DUALBOY_MACHINE_COUNT] = {0U, 0U};
+        bool draw[DUALBOY_MACHINE_COUNT] = {false, false};
+        bool any_cursor = false;
+        unsigned port;
+
+        if (core.session.engine != NULL &&
+            core.session.engine->video_frame != NULL &&
+            core.session.engine->video_frame(core.session.pair, 0U,
+                                             &frames[0]) &&
+            core.session.engine->video_frame(core.session.pair, 1U,
+                                             &frames[1])) {
+            for (port = 0U; port < DUALBOY_MACHINE_COUNT; ++port) {
+                draw[port] =
+                    (pointer_assigned == NULL || !pointer_assigned[port]) &&
+                    dualboy_touch_cursor_visible(&core.touch_cursors[port]) &&
+                    dualboy_compositor_project_point(
+                        frames, &core.session.display, port,
+                        core.touch_cursors[port].x,
+                        DUALBOY_NDS_SCREEN_HEIGHT +
+                            core.touch_cursors[port].y,
+                        &cursor_x[port], &cursor_y[port]);
+                any_cursor = any_cursor || draw[port];
+            }
+        }
+
+        if (any_cursor) {
+            const size_t row_bytes =
+                (size_t)composite->width * sizeof(uint32_t);
+            unsigned row;
+
+            for (row = 0U; row < composite->height; ++row) {
+                const uint8_t *source =
+                    (const uint8_t *)(const void *)composite->pixels +
+                    (size_t)row * composite->pitch;
+                memcpy(core.presentation_buffer +
+                           (size_t)row * composite->width,
+                       source, row_bytes);
+            }
+            pitch = row_bytes;
+            pixels = core.presentation_buffer;
+            for (port = 0U; port < DUALBOY_MACHINE_COUNT; ++port) {
+                if (draw[port]) {
+                    (void)dualboy_compositor_draw_cursor(
+                        core.presentation_buffer, composite->width,
+                        composite->height, pitch, cursor_x[port],
+                        cursor_y[port], accent[port]);
+                }
+            }
+        }
+    }
+
+    core.video(pixels, composite->width, composite->height, pitch);
 }
 
 static void update_options(void)
@@ -1218,6 +1363,7 @@ void retro_set_controller_port_device(unsigned port, unsigned device)
 
 void retro_reset(void)
 {
+    reset_touch_cursors();
     dualboy_session_reset(&core.session);
     synchronize_fastforward_policy();
 }
@@ -1227,6 +1373,9 @@ void retro_run(void)
     struct dualboy_machine_input inputs[DUALBOY_MACHINE_COUNT];
     struct dualboy_compositor_config display;
     struct dualboy_geometry geometry;
+    bool pointer_assigned[DUALBOY_MACHINE_COUNT] = {false, false};
+    uint64_t cursor_time_usec = 0U;
+    const bool cursor_time_available = touch_cursor_time(&cursor_time_usec);
     char error[DUALBOY_ERROR_CAPACITY] = {0};
 
     if (core.input_poll != NULL) {
@@ -1238,21 +1387,16 @@ void retro_run(void)
     update_options();
     display = current_display();
     synchronize_fastforward_policy();
-    inputs[0] = read_port_input(0U);
-    inputs[1] = read_port_input(1U);
-    apply_pointer_contacts(inputs, &display);
+    inputs[0] = read_port_input(0U, cursor_time_available,
+                                cursor_time_usec);
+    inputs[1] = read_port_input(1U, cursor_time_available,
+                                cursor_time_usec);
+    apply_pointer_contacts(inputs, &display, pointer_assigned);
     if (!dualboy_session_run(&core.session, inputs, &display, error,
                              sizeof(error))) {
         core_log(RETRO_LOG_ERROR, "emulation frame failed: %s",
                  error[0] != '\0' ? error : "unknown engine error");
-        if (core.video != NULL && core.session.composite.pixels != NULL &&
-            core.session.composite.width != 0U &&
-            core.session.composite.height != 0U) {
-            core.video(core.session.composite.pixels,
-                       core.session.composite.width,
-                       core.session.composite.height,
-                       core.session.composite.pitch);
-        }
+        publish_video_with_touch_cursors(pointer_assigned);
         /* A failed frame is not a publication boundary. Keep the last complete
          * audio/save observation; normal unload still force-flushes once the
          * synchronous engine call has returned quiescent. */
@@ -1266,12 +1410,7 @@ void retro_run(void)
     geometry.height = core.session.composite.height;
     geometry.aspect_ratio = (float)geometry.width / (float)geometry.height;
     publish_geometry(&geometry);
-    if (core.video != NULL) {
-        core.video(core.session.composite.pixels,
-                   core.session.composite.width,
-                   core.session.composite.height,
-                   core.session.composite.pitch);
-    }
+    publish_video_with_touch_cursors(pointer_assigned);
     drain_audio();
     tick_saves();
 }

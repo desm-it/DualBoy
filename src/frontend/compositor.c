@@ -123,6 +123,137 @@ bool dualboy_compositor_map_point(
     return true;
 }
 
+bool dualboy_compositor_project_point(
+    const struct dualboy_video_frame frames[2],
+    const struct dualboy_compositor_config *config,
+    unsigned port,
+    unsigned machine_x,
+    unsigned machine_y,
+    unsigned *composite_x,
+    unsigned *composite_y)
+{
+    struct dualboy_geometry geometry;
+    unsigned machine;
+    unsigned first;
+    unsigned x = machine_x;
+    unsigned y = machine_y;
+
+    if (frames == NULL || config == NULL || composite_x == NULL ||
+        composite_y == NULL || port >= DUALBOY_MACHINE_COUNT ||
+        !dualboy_compositor_geometry(frames, config, &geometry)) {
+        return false;
+    }
+    if ((config->mode == DUALBOY_MODE_PLAYER1 && port != 0U) ||
+        (config->mode == DUALBOY_MODE_PLAYER2 && port != 1U)) {
+        return false;
+    }
+
+    machine = dualboy_machine_for_port(port, config->swap_players);
+    if (machine >= DUALBOY_MACHINE_COUNT ||
+        machine_x >= frames[machine].width ||
+        machine_y >= frames[machine].height) {
+        return false;
+    }
+
+    if (config->mode == DUALBOY_MODE_DUAL && port == 1U) {
+        first = dualboy_machine_for_port(0U, config->swap_players);
+        if (config->layout == DUALBOY_LAYOUT_TOP_BOTTOM) {
+            y += frames[first].height;
+        } else {
+            x += frames[first].width;
+        }
+    }
+    if (x >= geometry.width || y >= geometry.height) {
+        return false;
+    }
+    *composite_x = x;
+    *composite_y = y;
+    return true;
+}
+
+bool dualboy_compositor_draw_cursor(uint32_t *output,
+                                    unsigned width,
+                                    unsigned height,
+                                    size_t pitch,
+                                    unsigned center_x,
+                                    unsigned center_y,
+                                    uint32_t accent)
+{
+    static const uint32_t black = UINT32_C(0x00000000);
+    static const uint32_t white = UINT32_C(0x00ffffff);
+    size_t row_bytes;
+    int offset_y;
+
+    if (output == NULL || width == 0U || height == 0U) {
+        return false;
+    }
+    row_bytes = (size_t)width * sizeof(*output);
+    if (row_bytes / sizeof(*output) != width || pitch < row_bytes ||
+        center_x >= width || center_y >= height) {
+        return false;
+    }
+
+    for (offset_y = -8; offset_y <= 8; ++offset_y) {
+        const int64_t pixel_y = (int64_t)center_y + offset_y;
+        int offset_x;
+
+        if (pixel_y < 0 || pixel_y >= (int64_t)height) {
+            continue;
+        }
+        for (offset_x = -8; offset_x <= 8; ++offset_x) {
+            const int64_t pixel_x = (int64_t)center_x + offset_x;
+            const int absolute_x = offset_x < 0 ? -offset_x : offset_x;
+            const int absolute_y = offset_y < 0 ? -offset_y : offset_y;
+            const int distance_squared =
+                offset_x * offset_x + offset_y * offset_y;
+            uint32_t color;
+            bool draw = false;
+
+            if (pixel_x < 0 || pixel_x >= (int64_t)width) {
+                continue;
+            }
+
+            /* A white inner ring and black outer ring guarantee a contrasting
+             * edge regardless of the game pixel beneath them. */
+            if (distance_squared >= 46 && distance_squared <= 68) {
+                color = black;
+                draw = true;
+            } else if (distance_squared >= 30 && distance_squared <= 45) {
+                color = white;
+                draw = true;
+            }
+
+            /* Fine crosshair ticks connect the ring to the exact target. */
+            if (((absolute_x <= 1 && absolute_y <= 8) ||
+                 (absolute_y <= 1 && absolute_x <= 8))) {
+                color = black;
+                draw = true;
+                if ((offset_x == 0 || offset_y == 0) &&
+                    (absolute_x >= 3 || absolute_y >= 3)) {
+                    color = white;
+                }
+            }
+
+            /* Keep the aim point precise and distinguish the two players. */
+            if (absolute_x <= 2 && absolute_y <= 2) {
+                color = black;
+                draw = true;
+                if (absolute_x <= 1 && absolute_y <= 1) {
+                    color = accent & UINT32_C(0x00ffffff);
+                }
+            }
+
+            if (draw) {
+                uint8_t *row = (uint8_t *)(void *)output +
+                               (size_t)pixel_y * pitch;
+                memcpy(row + (size_t)pixel_x * sizeof(color), &color,
+                       sizeof(color));
+            }
+        }
+    }
+    return true;
+}
+
 static void copy_row(uint32_t *destination,
                      const struct dualboy_video_frame *source,
                      unsigned row)

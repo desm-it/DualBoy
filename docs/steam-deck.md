@@ -143,8 +143,13 @@ Each NDS machine always shows its 256x192 top screen above its 256x192 bottom
 touch screen. RetroArch pointer contacts are accepted only inside displayed
 bottom-screen rectangles. If the active input driver exposes multiple pointer
 indices, contacts on the two bottom screens can drive both consoles at once; this
-must be verified on the installed Deck/input-driver combination. Hold R3 and use
-that player's right analog stick for an independent controller stylus fallback.
+must be verified on the installed Deck/input-driver combination. For an
+independent controller stylus fallback, move that player's right stick to aim,
+then hold R3 to press. Moving the stick displays a
+black-and-white aiming reticle on that player's bottom screen before the touch is
+pressed. Player 1 has a cyan center and Player 2 an orange center; the reticle
+hides after three seconds without meaningful movement. A direct touchscreen
+contact takes priority for that player.
 
 Useful core options are:
 

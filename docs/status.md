@@ -37,12 +37,12 @@ digest-pinned `linux/amd64` container on an ARM64 Docker host:
 ```text
 make test-linux-x86_64
 100% tests passed, 0 tests failed out of 10
-Total Test time (real) = 60.62 sec
-sameboy_adapter_unit: 8.68 seconds
-mgba_adapter_unit: 5.05 seconds
-melonds_adapter_unit: 10.58 seconds
-libretro_abi_smoke: 17.81 seconds
-libretro_nds_pointer_integration: 17.93 seconds
+Total Test time (real) = 58.94 sec
+sameboy_adapter_unit: 8.79 seconds
+mgba_adapter_unit: 4.92 seconds
+melonds_adapter_unit: 10.67 seconds
+libretro_abi_smoke: 16.82 seconds
+libretro_nds_pointer_integration: 17.13 seconds
 ```
 
 The ten passing tests were `frontend_unit`, `session_unit`,
@@ -53,7 +53,7 @@ explicit `make linux-x86_64` release build also completed successfully with
 `DUALBOY_WARNINGS_AS_ERRORS=ON`.
 
 A native Linux ARM64 RelWithDebInfo diagnostic configured with warnings as
-errors, rebuilt the current source, and passed the same 10/10 tests in 6.03
+errors, rebuilt the current source, and passed the same 10/10 tests in 6.20
 seconds. `git submodule update --init --recursive` succeeded and reported the
 four exact revisions in `THIRD_PARTY.md`; `third_party/melonDS` remained clean.
 
@@ -101,7 +101,11 @@ Source inspection of the current working tree shows:
   themselves joined to the enabled transport;
 - fixed 256x384 top-over-bottom per-machine frames, structured controller/touch
   input, compositor-aware bottom-screen pointer routing, and per-player
-  right-stick/R3 stylus fallback;
+  right-stick/R3 stylus fallback with a high-contrast aim reticle that hides
+  after three seconds without meaningful stick movement;
+- engine debug messages discarded at the platform entrypoint before formatting
+  or allocation, while info, warning, and error messages still reach the
+  frontend;
 - normal same-ROM, subsystem, and M3U NDS selection with strict header detection
   and mixed-family rejection; and
 - core-managed independent `.srm` and `.firmware.bin` files, with collision
@@ -163,6 +167,13 @@ content. The passing native and x86-64 runs above exercised:
 - two simultaneous pointer indices passed through the public Libretro callbacks,
   the production compositor transform, two real melonDS objects, and actual TSC
   conversion reads with independently asserted coordinates;
+- right-stick aiming shown before R3 touch, exact R3 coordinates reaching the
+  real melonDS TSC, direct-pointer precedence, exact three-second expiry through
+  the Libretro clock, 180-frame fallback timing, two-pixel drift filtering,
+  layout/swap projection, edge clipping, and black/white contrast over light,
+  dark, and colored frames;
+- high-volume melonDS debug logging rejected before formatting/allocation, with
+  info, warning, and error forwarding retained;
 - a deterministic held-worker deadline test proving that a timed-out frame does
   not return before both workers quiesce, that the pair is poisoned, and that
   memory access and destruction are safe afterward; and
@@ -191,7 +202,7 @@ The current source completed the native ARM64 ASan+UBSan command:
 ```text
 make asan-linux-native
 100% tests passed, 0 tests failed out of 10
-Total Test time (real) = 106.03 sec
+Total Test time (real) = 108.64 sec
 ```
 
 This is not a clean UBSan claim. CTest returned success and the log contains no
@@ -237,7 +248,7 @@ dist/linux-x86_64/share/libretro/info/dualboy_libretro.info
 x86-64 (`Advanced Micro Devices X86-64`), dynamically linked. The files have:
 
 ```text
-f1783c419bac6e20b3a30b0a969de5b5b6c0d72147148a2941d8f16c34338259  dualboy_libretro.so
+a64c0958d8e035ac009efc0c3c23068475ebac048f825bf273c224427a4574e2  dualboy_libretro.so
 f16a80e35815d46705b92f5ef45b117ec78a7395ee59535ee4b63570e21f83be  dualboy_libretro.info
 ```
 

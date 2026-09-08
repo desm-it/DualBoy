@@ -41,6 +41,7 @@ void *dualboy_libretro_debug_engine_pair(void);
 #define TEST_SLOT2_SRAM_ID 0x200U
 #define TEST_SLOT2_RTC_ID 0x201U
 #define TEST_POINTER_CONTACT_LIMIT 16U
+#define TEST_PLAYER1_CURSOR_COLOR UINT32_C(0x0000dfff)
 
 #define REQUIRE(expression)                                                     \
     do {                                                                        \
@@ -143,6 +144,10 @@ struct frontend_fixture {
     uint64_t video_hash;
     uint64_t first_screen_hash;
     uint64_t second_screen_hash;
+    retro_time_t time_usec;
+    unsigned video_probe_x;
+    unsigned video_probe_y;
+    uint32_t video_probe_pixel;
     unsigned audio_sample_calls;
     unsigned audio_batch_calls;
     size_t audio_frames;
@@ -150,6 +155,7 @@ struct frontend_fixture {
     unsigned input_state_calls[2];
     unsigned analog_input_calls[2];
     unsigned pointer_input_calls;
+    unsigned perf_interface_calls;
     unsigned fastforward_override_calls;
     struct retro_fastforwarding_override fastforward_override;
     unsigned log_calls;
@@ -161,6 +167,8 @@ struct frontend_fixture {
     bool video_contract_ok;
     bool audio_contract_ok;
     bool input_contract_ok;
+    bool video_probe_enabled;
+    bool video_probe_valid;
 };
 
 static struct frontend_fixture frontend;
@@ -331,6 +339,11 @@ static void RETRO_CALLCONV frontend_log(enum retro_log_level level,
     va_end(arguments);
 }
 
+static retro_time_t RETRO_CALLCONV frontend_time_usec(void)
+{
+    return frontend.time_usec;
+}
+
 static bool RETRO_CALLCONV environment_callback(unsigned command, void *data)
 {
     switch (command) {
@@ -393,6 +406,15 @@ static bool RETRO_CALLCONV environment_callback(unsigned command, void *data)
                 return false;
             }
             ((struct retro_log_callback *)data)->log = frontend_log;
+            return true;
+        case RETRO_ENVIRONMENT_GET_PERF_INTERFACE:
+            if (data == NULL) {
+                return false;
+            }
+            memset(data, 0, sizeof(struct retro_perf_callback));
+            ((struct retro_perf_callback *)data)->get_time_usec =
+                frontend_time_usec;
+            ++frontend.perf_interface_calls;
             return true;
         case RETRO_ENVIRONMENT_GET_INPUT_BITMASKS:
             return true;
@@ -479,6 +501,17 @@ static void RETRO_CALLCONV video_callback(const void *data,
     }
     frontend.video_hash = hash_rectangle((const uint8_t *)data, pitch, 0U, 0U,
                                          width, height);
+    frontend.video_probe_valid = false;
+    if (frontend.video_probe_enabled && frontend.video_probe_x < width &&
+        frontend.video_probe_y < height) {
+        const uint8_t *pixel = (const uint8_t *)data +
+                               (size_t)frontend.video_probe_y * pitch +
+                               (size_t)frontend.video_probe_x *
+                                   sizeof(uint32_t);
+        memcpy(&frontend.video_probe_pixel, pixel,
+               sizeof(frontend.video_probe_pixel));
+        frontend.video_probe_valid = true;
+    }
     if (width == 320U && height == 144U) {
         frontend.first_screen_hash = hash_rectangle(
             (const uint8_t *)data, pitch, 0U, 0U, 160U, 144U);
@@ -567,6 +600,8 @@ static void reset_observations(void)
     frontend.analog_input_calls[0] = 0U;
     frontend.analog_input_calls[1] = 0U;
     frontend.pointer_input_calls = 0U;
+    frontend.video_probe_enabled = false;
+    frontend.video_probe_valid = false;
     frontend.fastforward_override_calls = 0U;
     memset(&frontend.fastforward_override, 0,
            sizeof(frontend.fastforward_override));
@@ -887,6 +922,7 @@ static bool validate_registration(const struct core_api *api)
     REQUIRE(frontend.controller_calls == 1U);
     REQUIRE(frontend.input_descriptor_calls == 1U);
     REQUIRE(frontend.option_registration_calls == 1U);
+    REQUIRE(frontend.perf_interface_calls >= 1U);
 
     REQUIRE(frontend.subsystems != NULL);
     subsystem = &frontend.subsystems[0];
@@ -1356,6 +1392,34 @@ static bool test_nds_load_paths(struct core_api *api,
     REQUIRE(api->get_memory_data(TEST_SLOT1_SRAM_ID) == NULL);
     REQUIRE(api->get_memory_data(TEST_SLOT2_SRAM_ID) == NULL);
 
+    /* Right-stick movement reveals an aiming cursor before R3 presses the
+     * touchscreen. The target is player 1's bottom-screen pixel (64, 48). */
+    frontend.time_usec = INT64_C(1000000);
+    frontend.right_analog[0][RETRO_DEVICE_ID_ANALOG_X] =
+        pointer_coordinate(64U, 256U);
+    frontend.right_analog[0][RETRO_DEVICE_ID_ANALOG_Y] =
+        pointer_coordinate(48U, 192U);
+    frontend.video_probe_x = 64U;
+    frontend.video_probe_y = 192U + 48U;
+    frontend.video_probe_enabled = true;
+    api->run();
+    REQUIRE(frontend.video_probe_valid);
+    REQUIRE(frontend.video_probe_pixel == TEST_PLAYER1_CURSOR_COLOR);
+    REQUIRE(frontend.analog_input_calls[0] >= 2U);
+#if defined(DUALBOY_INTERNAL_TEST)
+    {
+        void *pair_handle = dualboy_libretro_debug_engine_pair();
+        bool active = true;
+        uint16_t x = 0U;
+        uint16_t y = 0U;
+
+        REQUIRE(pair_handle != NULL);
+        REQUIRE(dualboy_melonds_debug_last_touch(pair_handle, 0U, &active,
+                                                 &x, &y));
+        REQUIRE(!active);
+    }
+#endif
+
     /* Two simultaneous contacts occupy the two displayed bottom screens.
      * The adapter test independently verifies the resulting per-machine touch
      * values; this ABI test verifies successive Libretro pointer polling. */
@@ -1366,9 +1430,12 @@ static bool test_nds_load_paths(struct core_api *api,
     frontend.pointer_contacts[1].y = pointer_coordinate(292U, 384U);
     frontend.pointer_contacts[1].pressed = true;
     api->run();
-    REQUIRE(frontend.video_calls == 1U);
+    REQUIRE(frontend.video_calls == 2U);
     REQUIRE(frontend.video_width == 512U && frontend.video_height == 384U);
     REQUIRE(frontend.video_pitch == 512U * sizeof(uint32_t));
+    REQUIRE(frontend.video_probe_valid);
+    REQUIRE(frontend.video_probe_pixel != TEST_PLAYER1_CURSOR_COLOR);
+    frontend.video_probe_enabled = false;
     REQUIRE(frontend.pointer_input_calls >= 7U);
     REQUIRE(frontend.fastforward_override_calls == 1U);
     REQUIRE(frontend.fastforward_override.ratio == 1.0F);
@@ -1420,15 +1487,47 @@ static bool test_nds_load_paths(struct core_api *api,
     frontend.pointer_contacts[1].pressed = false;
     frontend.layout = "top_bottom";
     frontend.option_updated = true;
+    frontend.time_usec = INT64_C(4000000);
+    frontend.video_probe_x = 64U;
+    frontend.video_probe_y = 192U + 48U;
+    frontend.video_probe_enabled = true;
     geometry_calls = frontend.geometry_calls;
     api->run();
     REQUIRE(frontend.video_width == 256U && frontend.video_height == 768U);
     REQUIRE(frontend.geometry_calls > geometry_calls);
+    REQUIRE(frontend.video_probe_valid);
+    REQUIRE(frontend.video_probe_pixel != TEST_PLAYER1_CURSOR_COLOR);
+    frontend.video_probe_enabled = false;
 
     frontend.mode = "player1";
     frontend.option_updated = true;
+    frontend.input_masks[0] =
+        (uint16_t)(UINT16_C(1) << RETRO_DEVICE_ID_JOYPAD_R3);
+    frontend.time_usec = INT64_C(4000001);
+    frontend.video_probe_x = 64U;
+    frontend.video_probe_y = 192U + 48U;
+    frontend.video_probe_enabled = true;
     api->run();
     REQUIRE(frontend.video_width == 256U && frontend.video_height == 384U);
+    REQUIRE(frontend.video_probe_valid);
+    REQUIRE(frontend.video_probe_pixel == TEST_PLAYER1_CURSOR_COLOR);
+#if defined(DUALBOY_INTERNAL_TEST)
+    {
+        void *pair_handle = dualboy_libretro_debug_engine_pair();
+        bool active = false;
+        uint16_t x = 0U;
+        uint16_t y = 0U;
+
+        REQUIRE(pair_handle != NULL);
+        REQUIRE(dualboy_melonds_debug_last_touch(pair_handle, 0U, &active,
+                                                 &x, &y));
+        REQUIRE(active && x == 64U && y == 48U);
+        REQUIRE(dualboy_melonds_debug_tsc_touch(pair_handle, 0U, &x, &y));
+        REQUIRE(x == 64U && y == 48U);
+    }
+#endif
+    frontend.input_masks[0] = 0U;
+    frontend.video_probe_enabled = false;
     api->unload_game();
 
     set_default_options();

@@ -4,6 +4,7 @@
 
 #include "frontend/compositor.h"
 #include "frontend/content.h"
+#include "frontend/touch_cursor.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -279,11 +280,20 @@ static bool test_nds_geometry_and_point_mapping(void)
     CHECK(dualboy_compositor_map_point(frames, &config, 300U, 300U,
                                        &port, &x, &y));
     CHECK(port == 1U && x == 44U && y == 300U);
+    CHECK(dualboy_compositor_project_point(frames, &config, 0U, 10U,
+                                           200U, &x, &y));
+    CHECK(x == 10U && y == 200U);
+    CHECK(dualboy_compositor_project_point(frames, &config, 1U, 44U,
+                                           300U, &x, &y));
+    CHECK(x == 300U && y == 300U);
 
     config.swap_players = true;
     CHECK(dualboy_compositor_map_point(frames, &config, 10U, 200U,
                                        &port, &x, &y));
     CHECK(port == 0U && x == 10U && y == 200U);
+    CHECK(dualboy_compositor_project_point(frames, &config, 1U, 255U,
+                                           383U, &x, &y));
+    CHECK(x == 511U && y == 383U);
 
     config.swap_players = false;
     config.layout = DUALBOY_LAYOUT_TOP_BOTTOM;
@@ -292,6 +302,9 @@ static bool test_nds_geometry_and_point_mapping(void)
     CHECK(dualboy_compositor_map_point(frames, &config, 100U, 600U,
                                        &port, &x, &y));
     CHECK(port == 1U && x == 100U && y == 216U);
+    CHECK(dualboy_compositor_project_point(frames, &config, 1U, 100U,
+                                           216U, &x, &y));
+    CHECK(x == 100U && y == 600U);
 
     config.mode = DUALBOY_MODE_PLAYER2;
     CHECK(dualboy_compositor_geometry(frames, &config, &geometry));
@@ -301,13 +314,121 @@ static bool test_nds_geometry_and_point_mapping(void)
     CHECK(port == 1U && x == 255U && y == 383U);
     CHECK(!dualboy_compositor_map_point(frames, &config, 256U, 383U,
                                         &port, &x, &y));
+    CHECK(dualboy_compositor_project_point(frames, &config, 1U, 255U,
+                                           383U, &x, &y));
+    CHECK(x == 255U && y == 383U);
+    CHECK(!dualboy_compositor_project_point(frames, &config, 0U, 0U, 0U,
+                                            &x, &y));
+    CHECK(!dualboy_compositor_project_point(frames, &config, 1U, 256U, 0U,
+                                            &x, &y));
+    return true;
+}
+
+static bool test_touch_cursor_state(void)
+{
+    struct dualboy_touch_cursor cursor;
+    unsigned frame;
+
+    dualboy_touch_cursor_reset(&cursor);
+    CHECK(!dualboy_touch_cursor_visible(&cursor));
+
+    dualboy_touch_cursor_update(&cursor, 128U, 96U, false, false, true,
+                                UINT64_C(100));
+    CHECK(!dualboy_touch_cursor_visible(&cursor));
+    dualboy_touch_cursor_update(&cursor, 129U, 96U, false, false, true,
+                                UINT64_C(200));
+    CHECK(!dualboy_touch_cursor_visible(&cursor));
+    dualboy_touch_cursor_update(&cursor, 130U, 96U, false, false, true,
+                                UINT64_C(300));
+    CHECK(dualboy_touch_cursor_visible(&cursor));
+    CHECK(cursor.x == 130U && cursor.y == 96U);
+
+    dualboy_touch_cursor_update(
+        &cursor, 131U, 96U, false, false, true,
+        UINT64_C(300) + DUALBOY_TOUCH_CURSOR_TIMEOUT_USEC - UINT64_C(1));
+    CHECK(dualboy_touch_cursor_visible(&cursor));
+    dualboy_touch_cursor_update(
+        &cursor, 131U, 96U, false, false, true,
+        UINT64_C(300) + DUALBOY_TOUCH_CURSOR_TIMEOUT_USEC);
+    CHECK(!dualboy_touch_cursor_visible(&cursor));
+
+    /* A click reveals the aim point without making small analog drift count as
+     * continuous movement. A clock rollback safely starts a new interval. */
+    dualboy_touch_cursor_update(&cursor, 131U, 96U, false, true, true,
+                                UINT64_C(500));
+    CHECK(dualboy_touch_cursor_visible(&cursor));
+    dualboy_touch_cursor_update(&cursor, 131U, 96U, false, true, true,
+                                UINT64_C(400));
+    CHECK(dualboy_touch_cursor_visible(&cursor));
+    dualboy_touch_cursor_update(
+        &cursor, 131U, 96U, false, true, true,
+        UINT64_C(400) + DUALBOY_TOUCH_CURSOR_TIMEOUT_USEC);
+    CHECK(!dualboy_touch_cursor_visible(&cursor));
+
+    dualboy_touch_cursor_reset(&cursor);
+    dualboy_touch_cursor_update(&cursor, 64U, 48U, true, false, false, 0U);
+    CHECK(dualboy_touch_cursor_visible(&cursor));
+    for (frame = 1U; frame < DUALBOY_TOUCH_CURSOR_FALLBACK_FRAMES; ++frame) {
+        dualboy_touch_cursor_update(&cursor, 64U, 48U, false, false, false,
+                                    0U);
+        CHECK(dualboy_touch_cursor_visible(&cursor));
+    }
+    dualboy_touch_cursor_update(&cursor, 64U, 48U, false, false, false, 0U);
+    CHECK(!dualboy_touch_cursor_visible(&cursor));
+    return true;
+}
+
+static bool test_touch_cursor_drawing(void)
+{
+    enum { WIDTH = 21, HEIGHT = 21 };
+    const uint32_t dark = UINT32_C(0x00000000);
+    const uint32_t light = UINT32_C(0x00ffffff);
+    const uint32_t background = UINT32_C(0x00556677);
+    const uint32_t accent = UINT32_C(0x0000dfff);
+    uint32_t pixels[WIDTH * HEIGHT];
+    size_t index;
+
+    for (index = 0U; index < WIDTH * HEIGHT; ++index) {
+        pixels[index] = dark;
+    }
+    CHECK(dualboy_compositor_draw_cursor(
+        pixels, WIDTH, HEIGHT, WIDTH * sizeof(uint32_t), 10U, 10U, accent));
+    CHECK(pixels[10U * WIDTH + 10U] == accent);
+    CHECK(pixels[12U * WIDTH + 16U] == light);
+    CHECK(pixels[13U * WIDTH + 17U] == dark);
+    CHECK(pixels[20U * WIDTH + 20U] == dark);
+
+    for (index = 0U; index < WIDTH * HEIGHT; ++index) {
+        pixels[index] = light;
+    }
+    CHECK(dualboy_compositor_draw_cursor(
+        pixels, WIDTH, HEIGHT, WIDTH * sizeof(uint32_t), 10U, 10U, accent));
+    CHECK(pixels[10U * WIDTH + 10U] == accent);
+    CHECK(pixels[13U * WIDTH + 17U] == dark);
+    CHECK(pixels[20U * WIDTH + 20U] == light);
+
+    for (index = 0U; index < WIDTH * HEIGHT; ++index) {
+        pixels[index] = background;
+    }
+    CHECK(dualboy_compositor_draw_cursor(
+        pixels, WIDTH, HEIGHT, WIDTH * sizeof(uint32_t), 0U, 0U, accent));
+    CHECK(pixels[0U] == accent);
+    CHECK(pixels[2U * WIDTH + 6U] == light);
+    CHECK(pixels[3U * WIDTH + 7U] == dark);
+    CHECK(pixels[20U * WIDTH + 20U] == background);
+    CHECK(!dualboy_compositor_draw_cursor(
+        pixels, WIDTH, HEIGHT, WIDTH * sizeof(uint32_t), WIDTH, 0U, accent));
+    CHECK(!dualboy_compositor_draw_cursor(NULL, WIDTH, HEIGHT,
+                                          WIDTH * sizeof(uint32_t), 0U, 0U,
+                                          accent));
     return true;
 }
 
 int main(void)
 {
     if (!test_detection() || !test_compositor() ||
-        !test_nds_geometry_and_point_mapping()) {
+        !test_nds_geometry_and_point_mapping() ||
+        !test_touch_cursor_state() || !test_touch_cursor_drawing()) {
         return EXIT_FAILURE;
     }
     puts("frontend tests passed");

@@ -34,6 +34,7 @@ add_library(dualboy_frontend STATIC
     src/frontend/save_manager.c
     src/frontend/session.c
     src/frontend/state.c
+    src/frontend/touch_cursor.c
 )
 
 target_include_directories(dualboy_frontend PUBLIC
