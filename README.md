@@ -1,20 +1,26 @@
 # DualBoy
 
-DualBoy is one Libretro core that runs exactly two systems in one RetroArch
-session:  
+DualBoy is an experimental Libretro core that combines SameBoy, mGBA, and
+melonDS so two local handheld systems can run together in one split-screen
+RetroArch session.
 
-- Game Boy / Game Boy Color via SameBoy  
-- Game Boy Advance via mGBA  
-- Nintendo DS via melonDS  
+Validation is currently Steam Deck-focused; use the links below to jump directly
+to the relevant sections.
 
-It combines all three emulation engines with project-specific coordination and
-UI glue to provide split-screen local multiplayer (side-by-side or top/bottom),
-paired link handling, controller assignment, and save routing in a single core.
+## Index
 
-Current behavior is **experimental** and intentionally limited to local
-two-player workflows (duplicate ROM mode, the `dualboylink` subsystem, or
-two-entry M3U). It includes no nested core loading and no official claims about
-online compatibility beyond local local-multiplayer features.
+- [Build](#build)
+- [Install in RetroArch](#install-in-retroarch)
+- [Load content](#load-content)
+- [Players, screens, and audio](#players-screens-and-audio)
+- [Core options](#core-options)
+- [Saves and save states](#saves-and-save-states)
+- [Steam Deck](#steam-deck)
+- [Scope and licenses](#scope-and-licenses)
+
+Current behavior is intentionally focused on local two-player flows (duplicate ROM
+mode, the `dualboylink` subsystem, or two-entry M3U). It includes no nested core
+loading and no official claims beyond local local-multiplayer features.
 
 The project is validated with source-generated ROM fixtures and does not include
 commercial ROMs, BIOS files, firmware, user saves, or private artifacts.
