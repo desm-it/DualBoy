@@ -341,6 +341,12 @@ check.
 - **NDS fast-forward stops in a multiplayer lobby:** this is the intended
   transport-safety override. Leave the lobby or disable **Local Link** to release
   it.
+- **`Nintendo DS frame workers timed out` appears:** the pair has been retired
+  for safety and an in-game reset cannot recover it; unload and reload the
+  content. Current builds bound the known repeated LocalMP host-poll wait and
+  log only the first failed frame in that failure episode. Capture that first
+  timeout and the transport messages immediately before it if it recurs; the
+  absence of repeated errors does not by itself prove wireless is still working.
 
 Reference documentation:
 

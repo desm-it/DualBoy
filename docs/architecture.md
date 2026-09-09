@@ -91,11 +91,25 @@ instances concurrently is required because `LocalMP` can wait for the peer.
 Teardown wakes and joins both workers before destroying engine objects,
 including partial-load paths.
 
+The LocalMP bridge makes host receives aware of that outer frame boundary.
+Each receive first consumes an already-queued packet without waiting. An empty
+receive may use upstream's 25 ms wait only once per outer frame and only while
+the peer has been dispatched and has not reached its frame boundary; after the
+peer reaches that boundary, it cannot produce another packet until the next
+frontend frame. This prevents
+melonDS's late-client host check from multiplying a 25 ms wall-clock wait on
+every 8-us emulated Wi-Fi tick, while preserving the upstream wait for host-side
+multiplayer replies.
+
 The worker barrier has a ten-second soft deadline. Crossing it requests an
-abort, removes both machines from `LocalMP`, waits for both workers to become
-quiescent, and permanently poisons that pair; no failed call returns while a
-worker can still access pair-owned memory. This preserves the synchronous engine
-ownership contract, but it is not hard cancellation: if upstream
+abort, makes subsequent packet callbacks return without starting more transport
+work, waits for both workers to become quiescent, removes both machines from
+`LocalMP`, and permanently poisons that pair; no failed call returns while a
+worker can still access pair-owned memory. The Libretro entrypoint logs the
+first failed frame in a consecutive failure episode and suppresses repeats
+until a frame succeeds or content is unloaded, so a poisoned pair cannot flood
+the frontend log. This preserves the synchronous engine ownership contract,
+but it is not hard cancellation: if upstream
 `NDS::RunFrame()` itself never returns, the frontend thread must still wait for
 quiescence. Safely bounding that permanent-wedge case would require upstream
 cancellation support or process isolation.

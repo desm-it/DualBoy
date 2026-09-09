@@ -66,6 +66,8 @@ struct dualboy_libretro_context {
     bool pending_link_value;
     bool link_request_pending;
     bool link_failure_logged;
+    bool frame_failure_logged;
+    char last_frame_failure[DUALBOY_ERROR_CAPACITY];
     bool input_bitmasks;
     bool geometry_valid;
     bool fastforward_override_known;
@@ -544,6 +546,8 @@ static void unload_current(void)
     reset_touch_cursors();
     core.geometry_valid = false;
     core.loaded_nds_renderer = DUALBOY_VIDEO_RENDERER_SOFTWARE;
+    core.frame_failure_logged = false;
+    core.last_frame_failure[0] = '\0';
 }
 
 /* A failed transactional rollback can leave engine memory untrustworthy.
@@ -556,6 +560,8 @@ static void discard_current(void)
     dualboy_session_unload(&core.session);
     reset_touch_cursors();
     core.geometry_valid = false;
+    core.frame_failure_logged = false;
+    core.last_frame_failure[0] = '\0';
 }
 
 static bool set_pixel_format(void)
@@ -1716,8 +1722,15 @@ void retro_run(void)
     apply_pointer_contacts(inputs, &display, pointer_assigned);
     if (!dualboy_session_run(&core.session, inputs, &display, error,
                              sizeof(error))) {
-        core_log(RETRO_LOG_ERROR, "emulation frame failed: %s",
-                 error[0] != '\0' ? error : "unknown engine error");
+        const char *const message =
+            error[0] != '\0' ? error : "unknown engine error";
+        if (!core.frame_failure_logged ||
+            strcmp(core.last_frame_failure, message) != 0) {
+            (void)snprintf(core.last_frame_failure,
+                           sizeof(core.last_frame_failure), "%s", message);
+            core.frame_failure_logged = true;
+            core_log(RETRO_LOG_ERROR, "emulation frame failed: %s", message);
+        }
         publish_video_with_touch_cursors(pointer_assigned);
         /* A failed frame is not a publication boundary. Keep the last complete
          * audio/save observation; normal unload still force-flushes once the
@@ -1725,6 +1738,8 @@ void retro_run(void)
         synchronize_fastforward_policy();
         return;
     }
+    core.frame_failure_logged = false;
+    core.last_frame_failure[0] = '\0';
 
     synchronize_fastforward_policy();
 

@@ -51,6 +51,11 @@ bool dualboy_melonds_debug_fail_next_gl_renderer(void *pair,
 bool dualboy_melonds_debug_uses_opengl(const void *pair);
 bool dualboy_melonds_debug_link_enabled(const void *pair);
 bool dualboy_melonds_debug_hold_next_frame(void *pair, unsigned machine);
+bool dualboy_melonds_debug_wait_for_frame_hold(void *pair,
+                                              unsigned machine,
+                                              uint32_t timeout_ms);
+bool dualboy_melonds_debug_worker_frame_active(const void *pair,
+                                              unsigned machine);
 bool dualboy_melonds_debug_wait_for_frame_timeout(void *pair,
                                                  uint32_t timeout_ms);
 bool dualboy_melonds_debug_release_frame_hold(void *pair, unsigned machine);

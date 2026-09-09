@@ -136,6 +136,10 @@ struct MelonDSPair {
         for (unsigned machine = 0U; machine < kMachineCount; ++machine) {
             machines[machine].pair = this;
             machines[machine].id = machine;
+            worker_frame_active[machine].store(false,
+                                               std::memory_order_relaxed);
+            host_receive_wait_available[machine].store(
+                false, std::memory_order_relaxed);
         }
         local_mp.SetRecvTimeout(25);
         try {
@@ -240,8 +244,9 @@ struct MelonDSPair {
 
     void MPBegin(MachineContext &context)
     {
-        context.mp_requested.store(true, std::memory_order_release);
         std::lock_guard<std::mutex> lock(mp_control_mutex);
+        if (abort_requested.load(std::memory_order_acquire)) return;
+        context.mp_requested.store(true, std::memory_order_release);
         if (link_enabled.load(std::memory_order_acquire) &&
             !context.mp_registered.load(std::memory_order_acquire)) {
             local_mp.Begin(static_cast<int>(context.id));
@@ -299,6 +304,8 @@ struct MelonDSPair {
 
             std::array<char, 256U> message{};
             const bool success = ExecuteMachine(machine, message);
+            worker_frame_active[machine_id].store(false,
+                                                  std::memory_order_release);
 
             {
                 std::lock_guard<std::mutex> lock(frame_mutex);
@@ -500,6 +507,9 @@ struct MelonDSPair {
     unsigned completed_workers = 0U;
     std::array<bool, kMachineCount> worker_success{{true, true}};
     std::array<std::array<char, 256U>, kMachineCount> worker_error{};
+    std::array<std::atomic<bool>, kMachineCount> worker_frame_active;
+    std::array<std::atomic<bool>, kMachineCount>
+        host_receive_wait_available;
     FrameState frame_state = FrameState::Idle;
     std::atomic<bool> abort_requested{false};
     std::chrono::milliseconds frame_deadline{kFrameDeadline};
@@ -1337,6 +1347,12 @@ static bool RunFrame(void *opaque_pair, char *error, std::size_t error_size)
         pair->worker_success = {{true, true}};
         pair->worker_error = {};
         pair->abort_requested.store(false, std::memory_order_release);
+        for (unsigned machine = 0U; machine < kMachineCount; ++machine) {
+            pair->worker_frame_active[machine].store(
+                true, std::memory_order_release);
+            pair->host_receive_wait_available[machine].store(
+                true, std::memory_order_release);
+        }
         pair->frame_state = FrameState::Running;
         ++pair->generation;
     }
@@ -1752,7 +1768,10 @@ int MPSendPacket(std::uint8_t *data,
 {
     MachineContext *context = ContextFromUserdata(userdata);
     if (context == nullptr ||
-        !context->mp_registered.load(std::memory_order_acquire)) return 0;
+        !context->mp_registered.load(std::memory_order_acquire) ||
+        context->pair->abort_requested.load(std::memory_order_acquire)) {
+        return 0;
+    }
     return context->pair->local_mp.SendPacket(
         static_cast<int>(context->id), data, length, timestamp);
 }
@@ -1763,7 +1782,10 @@ int MPRecvPacket(std::uint8_t *data,
 {
     MachineContext *context = ContextFromUserdata(userdata);
     if (context == nullptr ||
-        !context->mp_registered.load(std::memory_order_acquire)) return 0;
+        !context->mp_registered.load(std::memory_order_acquire) ||
+        context->pair->abort_requested.load(std::memory_order_acquire)) {
+        return 0;
+    }
     return context->pair->local_mp.RecvPacket(
         static_cast<int>(context->id), data, timestamp);
 }
@@ -1775,7 +1797,10 @@ int MPSendCmd(std::uint8_t *data,
 {
     MachineContext *context = ContextFromUserdata(userdata);
     if (context == nullptr ||
-        !context->mp_registered.load(std::memory_order_acquire)) return 0;
+        !context->mp_registered.load(std::memory_order_acquire) ||
+        context->pair->abort_requested.load(std::memory_order_acquire)) {
+        return 0;
+    }
     return context->pair->local_mp.SendCmd(
         static_cast<int>(context->id), data, length, timestamp);
 }
@@ -1788,7 +1813,10 @@ int MPSendReply(std::uint8_t *data,
 {
     MachineContext *context = ContextFromUserdata(userdata);
     if (context == nullptr ||
-        !context->mp_registered.load(std::memory_order_acquire)) return 0;
+        !context->mp_registered.load(std::memory_order_acquire) ||
+        context->pair->abort_requested.load(std::memory_order_acquire)) {
+        return 0;
+    }
     return context->pair->local_mp.SendReply(
         static_cast<int>(context->id), data, length, timestamp, aid);
 }
@@ -1800,7 +1828,10 @@ int MPSendAck(std::uint8_t *data,
 {
     MachineContext *context = ContextFromUserdata(userdata);
     if (context == nullptr ||
-        !context->mp_registered.load(std::memory_order_acquire)) return 0;
+        !context->mp_registered.load(std::memory_order_acquire) ||
+        context->pair->abort_requested.load(std::memory_order_acquire)) {
+        return 0;
+    }
     return context->pair->local_mp.SendAck(
         static_cast<int>(context->id), data, length, timestamp);
 }
@@ -1811,8 +1842,39 @@ int MPRecvHostPacket(std::uint8_t *data,
 {
     MachineContext *context = ContextFromUserdata(userdata);
     if (context == nullptr ||
-        !context->mp_registered.load(std::memory_order_acquire)) return 0;
-    return context->pair->local_mp.RecvHostPacket(
+        !context->mp_registered.load(std::memory_order_acquire) ||
+        context->pair->abort_requested.load(std::memory_order_acquire)) {
+        return 0;
+    }
+
+    MelonDSPair *const pair = context->pair;
+    const unsigned peer_id = context->id == 0U ? 1U : 0U;
+    if (!pair->machines[peer_id].mp_registered.load(
+            std::memory_order_acquire)) {
+        return -1;
+    }
+
+    /* LocalMP's normal host receive waits up to 25 ms for another emulation
+     * thread. Consume anything already queued first, without sleeping. Permit
+     * one empty wait per outer frame while the peer can still produce data;
+     * once that budget is spent or the peer finishes, another blocking wait
+     * cannot improve scheduling and may otherwise repeat on every 8-us WiFi
+     * tick. */
+    const int received = pair->local_mp.RecvPacket(
+        static_cast<int>(context->id), data, timestamp);
+    if (received != 0) return received;
+    if (!pair->worker_frame_active[peer_id].load(
+            std::memory_order_acquire)) {
+        /* Pair the peer's release-store at its frame boundary with one final
+         * queue probe so its last send cannot be deferred by the state race. */
+        return pair->local_mp.RecvPacket(
+            static_cast<int>(context->id), data, timestamp);
+    }
+    if (!pair->host_receive_wait_available[context->id].exchange(
+            false, std::memory_order_acq_rel)) {
+        return 0;
+    }
+    return pair->local_mp.RecvHostPacket(
         static_cast<int>(context->id), data, timestamp);
 }
 
@@ -1823,7 +1885,10 @@ std::uint16_t MPRecvReplies(std::uint8_t *data,
 {
     MachineContext *context = ContextFromUserdata(userdata);
     if (context == nullptr ||
-        !context->mp_registered.load(std::memory_order_acquire)) return 0U;
+        !context->mp_registered.load(std::memory_order_acquire) ||
+        context->pair->abort_requested.load(std::memory_order_acquire)) {
+        return 0U;
+    }
     return context->pair->local_mp.RecvReplies(
         static_cast<int>(context->id), data, timestamp, aidmask);
 }
@@ -2131,6 +2196,29 @@ extern "C" bool dualboy_melonds_debug_hold_next_frame(void *opaque_pair,
     }
     pair->debug_hold_next_frame[machine] = true;
     return true;
+}
+
+extern "C" bool dualboy_melonds_debug_wait_for_frame_hold(
+    void *opaque_pair, unsigned machine, std::uint32_t timeout_ms)
+{
+    MelonDSPair *pair = AsPair(opaque_pair);
+    if (pair == nullptr || machine >= kMachineCount || timeout_ms == 0U) {
+        return false;
+    }
+    std::unique_lock<std::mutex> lock(pair->frame_mutex);
+    return pair->state_cv.wait_for(
+        lock, std::chrono::milliseconds(timeout_ms), [pair, machine]() {
+            return pair->frame_state == FrameState::ShuttingDown ||
+                   pair->debug_frame_held[machine];
+        }) && pair->debug_frame_held[machine];
+}
+
+extern "C" bool dualboy_melonds_debug_worker_frame_active(
+    const void *opaque_pair, unsigned machine)
+{
+    const MelonDSPair *pair = AsPair(opaque_pair);
+    return pair != nullptr && machine < kMachineCount &&
+           pair->worker_frame_active[machine].load(std::memory_order_acquire);
 }
 
 extern "C" bool dualboy_melonds_debug_wait_for_frame_timeout(

@@ -8,6 +8,8 @@
 
 #if defined(DUALBOY_INTERNAL_TEST)
 #include "engines/melonds/nds_adapter_test.h"
+#include <pthread.h>
+#include <stdatomic.h>
 void *dualboy_libretro_debug_engine_pair(void);
 #endif
 
@@ -167,6 +169,7 @@ struct frontend_fixture {
     struct retro_fastforwarding_override fastforward_override;
     unsigned log_calls;
     unsigned error_log_calls;
+    unsigned frame_error_log_calls;
     char last_log[TEST_LOG_CAPACITY];
     bool support_no_game_seen;
     bool support_no_game;
@@ -353,6 +356,10 @@ static void RETRO_CALLCONV frontend_log(enum retro_log_level level,
     (void)vsnprintf(frontend.last_log, sizeof(frontend.last_log), format,
                     arguments);
     va_end(arguments);
+    if (level == RETRO_LOG_ERROR &&
+        strstr(frontend.last_log, "emulation frame failed:") != NULL) {
+        ++frontend.frame_error_log_calls;
+    }
 }
 
 static retro_time_t RETRO_CALLCONV frontend_time_usec(void)
@@ -1952,6 +1959,108 @@ static bool test_nds_load_paths(struct core_api *api,
     return true;
 }
 
+#if defined(DUALBOY_INTERNAL_TEST)
+struct asynchronous_run {
+    struct core_api *api;
+    atomic_bool returned;
+};
+
+static void *run_frame_asynchronously(void *opaque)
+{
+    struct asynchronous_run *run = (struct asynchronous_run *)opaque;
+
+    run->api->run();
+    atomic_store_explicit(&run->returned, true, memory_order_release);
+    return NULL;
+}
+#endif
+
+static bool test_nds_frame_failure_logging(struct core_api *api,
+                                           const uint8_t *rom)
+{
+#if !defined(DUALBOY_INTERNAL_TEST)
+    (void)api;
+    (void)rom;
+    return true;
+#else
+    const struct retro_game_info game = {
+        "/virtual/nds-frame-failure.nds", rom, TEST_NDS_ROM_SIZE, NULL,
+    };
+    struct asynchronous_run run;
+    pthread_t thread;
+    void *pair;
+    unsigned errors_before;
+    unsigned errors_after_timeout;
+    unsigned errors_after_poison_transition;
+    bool observed_timeout;
+    bool returned_at_deadline;
+    bool released;
+    int create_result;
+    int join_result;
+    unsigned frame;
+
+    set_default_options();
+    reset_observations();
+    REQUIRE(api->load_game(&game));
+    pair = dualboy_libretro_debug_engine_pair();
+    REQUIRE(pair != NULL);
+    REQUIRE(dualboy_melonds_debug_set_mp_requested(pair, 0U, true));
+    REQUIRE(dualboy_melonds_debug_set_mp_requested(pair, 1U, true));
+    REQUIRE(dualboy_melonds_debug_registration_mask(pair) == 0x03U);
+    REQUIRE(dualboy_melonds_debug_set_frame_deadline_ms(pair,
+                                                        UINT32_C(100)));
+    REQUIRE(dualboy_melonds_debug_hold_next_frame(pair, 1U));
+
+    run.api = api;
+    atomic_init(&run.returned, false);
+    errors_before = frontend.frame_error_log_calls;
+    create_result = pthread_create(&thread, NULL, run_frame_asynchronously,
+                                   &run);
+    REQUIRE(create_result == 0);
+
+    /* Release and join on every observation path so an assertion can never
+     * leave the deliberately held worker or frontend call behind. */
+    observed_timeout =
+        dualboy_melonds_debug_wait_for_frame_timeout(pair, UINT32_C(5000));
+    returned_at_deadline =
+        atomic_load_explicit(&run.returned, memory_order_acquire);
+    released = dualboy_melonds_debug_release_frame_hold(pair, 1U);
+    join_result = pthread_join(thread, NULL);
+
+    REQUIRE(observed_timeout);
+    REQUIRE(!returned_at_deadline);
+    REQUIRE(released);
+    REQUIRE(join_result == 0);
+    REQUIRE(atomic_load_explicit(&run.returned, memory_order_acquire));
+    REQUIRE(dualboy_melonds_debug_is_frame_poisoned(pair));
+    REQUIRE(dualboy_melonds_debug_registration_mask(pair) == 0U);
+    REQUIRE(frontend.frame_error_log_calls == errors_before + 1U);
+    REQUIRE(strstr(frontend.last_log,
+                   "Nintendo DS frame workers timed out after 100 milliseconds") !=
+            NULL);
+
+    errors_after_timeout = frontend.frame_error_log_calls;
+    api->run();
+    REQUIRE(frontend.frame_error_log_calls == errors_after_timeout + 1U);
+    REQUIRE(strstr(frontend.last_log,
+                   "Nintendo DS pair is unavailable after an earlier") !=
+            NULL);
+    errors_after_poison_transition = frontend.frame_error_log_calls;
+    for (frame = 1U; frame < 120U; ++frame) {
+        api->run();
+    }
+    REQUIRE(frontend.frame_error_log_calls == errors_after_poison_transition);
+
+    /* A poisoned adapter cannot recover through reset. It remains part of the
+     * same failure episode and must not start another per-frame log flood. */
+    api->reset();
+    api->run();
+    REQUIRE(frontend.frame_error_log_calls == errors_after_poison_transition);
+    api->unload_game();
+    return true;
+#endif
+}
+
 static bool test_m3u_load(struct core_api *api,
                           const uint8_t *first_rom,
                           const uint8_t *second_rom)
@@ -2368,7 +2477,8 @@ int main(int argc, char **argv)
         !test_m3u_load(&api, normal_rom, first_rom) ||
         !test_gba_two_rom_subsystem(&api, gba_rom, gba_second_rom) ||
         !test_gba_load(&api, gba_rom) ||
-        !test_nds_load_paths(&api, nds_rom, nds_second_rom)) {
+        !test_nds_load_paths(&api, nds_rom, nds_second_rom) ||
+        !test_nds_frame_failure_logging(&api, nds_rom)) {
         goto cleanup;
     }
     success = true;

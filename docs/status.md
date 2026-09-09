@@ -1,12 +1,13 @@
 # Implementation status
 
-Last updated: 2026-09-08.
+Last updated: 2026-09-09.
 
 DualBoy now has a Nintendo DS engine implementation in addition to its existing
 GB/GBC/GBA engines. The post-integration Linux x86-64 release suite and generated
 content tests are recorded below. This document separates that automated
-evidence from still-unverified real-RetroArch, retail/local-wireless, physical
-controller, performance, suspend/resume, and compatibility boundaries.
+evidence and user-reported pre-fix RetroArch failure evidence from still-unverified
+patched-runtime success, retail/local-wireless compatibility, physical controller
+behavior, performance, and suspend/resume boundaries.
 
 ## Verified upstream facts
 
@@ -19,9 +20,15 @@ controller, performance, suspend/resume, and compatibility boundaries.
   `fa743c965939f091350df094f57e639933bc17e3`, the pinned submodule commit.
 - melonDS `906e9ebb27da8c6a715cd7abab4abfe8a8d29427` and tree
   `60c6724f8695bdbe5e21c4367b18293f7f811fc2` were pinned as an untouched
-  submodule. On 2026-09-08 that commit matched upstream `HEAD` and `master`.
+  submodule. On 2026-09-09 that commit matched upstream `HEAD` and `master`.
   The root license and selected bundled-source licenses were audited; the static
   combined binary is governed by GPLv3-compatible distribution terms.
+- Current upstream `master` still checks for a late LocalMP host frame on every
+  8-us emulated Wi-Fi tick. Upstream's unmerged
+  [commit `6b385cab`](https://github.com/melonDS-emu/melonDS/commit/6b385cab4e10ae09cb6378dd591550dbc6762aa7)
+  independently identified that polling storm and throttles it to 512 us; the
+  commit remains on draft [PR #1846](https://github.com/melonDS-emu/melonDS/pull/1846),
+  not on the pinned/master line.
 - `JesseTG/melonds-ds` commit
   `bc4e4b67d2d470d7c682810a1e892cafd6f9082b` was inspected as a pattern
   reference only and is not a production dependency.
@@ -31,23 +38,23 @@ controller, performance, suspend/resume, and compatibility boundaries.
 
 ## Current post-NDS build and test results
 
-On the final 2026-09-08 source, the exact primary release gate completed in the
+On the final 2026-09-09 source, the exact primary release gate completed in the
 digest-pinned `linux/amd64` container on an ARM64 Docker host:
 
 ```text
 make test-linux-x86_64
 100% tests passed, 0 tests failed out of 10
-Total Test time (real) = 165.25 sec
+Total Test time (real) = 168.79 sec
 frontend_unit: 0.03 seconds
 session_unit: 0.03 seconds
 state_unit: 0.03 seconds
 persistence_unit: 0.04 seconds
-save_manager_unit: 0.08 seconds
-sameboy_adapter_unit: 8.52 seconds
-mgba_adapter_unit: 4.85 seconds
-melonds_adapter_unit: 34.28 seconds
-libretro_abi_smoke: 21.67 seconds
-libretro_nds_pointer_integration: 95.37 seconds
+save_manager_unit: 0.12 seconds
+sameboy_adapter_unit: 8.80 seconds
+mgba_adapter_unit: 5.06 seconds
+melonds_adapter_unit: 35.89 seconds
+libretro_abi_smoke: 21.71 seconds
+libretro_nds_pointer_integration: 96.65 seconds
 ```
 
 The ten passing tests were `frontend_unit`, `session_unit`,
@@ -103,6 +110,11 @@ Source inspection of the current working tree shows:
 - one pair-owned upstream `LocalMP`, with its 16-instance capacity unchanged but
   DualBoy registering only IDs 0 and 1 and allowing link enable/disable without
   content reload;
+- a progress-aware LocalMP host-receive bridge that consumes queued packets
+  immediately, permits at most one 25 ms empty wait per outer frame while the
+  peer has not reached its frame boundary, and makes subsequent packet
+  send/receive callbacks return immediately after a worker deadline, without
+  changing upstream or removing its host-side reply wait;
 - an experimental NDS OpenGL Core 3.2 path that is mutually exclusive with
   `LocalMP`, obtains one explicit surfaceless EGL display and creates two
   dedicated, unshared context slots on an adapter worker, reads both texture
@@ -198,6 +210,9 @@ content. The passing native and x86-64 runs above exercised:
 - a deterministic held-worker deadline test proving that a timed-out frame does
   not return before both workers quiesce, that the pair is poisoned, and that
   memory access and destruction are safe afterward;
+- a deterministic idle-peer LocalMP regression whose old path spent roughly
+  500 ms on 20 empty host polls, plus a public-entrypoint failure regression
+  proving one timeout is logged once rather than again on every poisoned frame;
 - an independently initialized surfaceless EGL display remaining valid across
   adapter OpenGL teardown, plus sanitizer-visible renderer activation and
   rollback lifecycles that release the adapted upstream CPU vertex arrays;
@@ -231,7 +246,7 @@ The current source completed the native ARM64 ASan+UBSan command:
 ```text
 make asan-linux-native
 100% tests passed, 0 tests failed out of 10
-Total Test time (real) = 172.00 sec
+Total Test time (real) = 180.46 sec
 ```
 
 CTest returned success and the log contains zero AddressSanitizer or
@@ -242,8 +257,23 @@ melonDS (`CP15.cpp` and `NDS.cpp` unaligned 32-bit accesses plus `SPU.cpp`
 zero-bound VLA). The melonDS diagnostics occur in the real adapter and Libretro
 integration tests. The submodules remain unmodified, so these are recorded
 sanitizer blockers/technical debt rather than suppressed or represented as a
-clean pass. An emulated `linux/amd64` ASan process is not used on this ARM host
-because its virtual-address-space setup is unreliable.
+clean pass.
+
+The exact emulated sanitizer target was also attempted on this ARM64 host:
+
+```text
+make asan-linux-x86_64
+0% tests passed, 10 tests failed out of 10
+Total Test time (real) = 32.19 sec
+```
+
+Its instrumented x86-64 build completed, but QEMU killed every test subprocess,
+including `frontend_unit`, before any test output. A direct run of that smallest
+test exited 137, and the container cgroup reported `oom_kill 1`; Docker exposed
+about 2.09 GB to the emulation VM. This is an emulated-ASan environment failure,
+not a product-test pass or assertion failure. The successful native ARM64 run
+above is the repository's portable sanitizer gate on this host, while the
+non-sanitized `linux/amd64` release suite remains the target-architecture gate.
 
 The first OpenGL-enabled sanitizer run failed 3/10 tests because pinned
 `GLRenderer2D` leaked its two CPU vertex arrays: 19,968 bytes per 2D renderer,
@@ -292,7 +322,7 @@ dist/linux-x86_64/share/libretro/info/dualboy_libretro.info
 x86-64 (`Advanced Micro Devices X86-64`), dynamically linked. The files have:
 
 ```text
-4759d6768b2fd7ed28d59c26b0e7e0292117546ab1a64a0f1116ba065cd1ba33  dualboy_libretro.so
+9b7ee72c2130419f6fdabc57232a0462513bc99cd96c71058835bd2b3a9cc359  dualboy_libretro.so
 f16a80e35815d46705b92f5ef45b117ec78a7395ee59535ee4b63570e21f83be  dualboy_libretro.info
 ```
 
@@ -367,11 +397,21 @@ such error remains a potential desynchronization and should be investigated.
 
 ## Unverified runtime boundaries and known MVP limits
 
-- A pre-NDS build loaded in real RetroArch on Steam Deck, but controller ordering,
-  performance, suspend/resume, and long-session persistence remain unverified.
-- No NDS content has yet been loaded in a real RetroArch process or on a physical
-  Steam Deck. The earlier Deck launch and GBA crash investigation do not validate
-  the NDS path.
+- A user-run RetroArch/DRM session loaded Mario Kart DS in dual,
+  software-rendered, side-by-side mode with Local Link enabled. When local
+  wireless became active, that pre-fix build reported the 10-second NDS worker
+  deadline and then logged the poisoned-pair error on every frontend frame.
+  User-reported process telemetry showed RetroArch still alive, both emulation
+  workers active, futex waits, about 518 MB of memory, and no crash, OOM,
+  coredump, or GPU reset. This is useful failure evidence, not a successful
+  multiplayer or compatibility result; the physical device was not established
+  by the report, and no game or save artifact entered the repository.
+- The callback-level timing mitigation and log coalescing pass deterministic
+  synthetic regressions, but the patched core has not been rerun with that game
+  or in the reporting environment.
+  Controller ordering, performance, suspend/resume, long-session persistence,
+  physical Deck behavior, and successful retail local wireless therefore remain
+  unverified.
 - The NDS OpenGL path deliberately does not use a frontend context. Its
   automated accepted-path gate uses Mesa's software rasterizer with explicit
   surfaceless EGL, proving context creation, two-instance rendering/readback,
@@ -393,7 +433,9 @@ such error remains a potential desynchronization and should be investigated.
   emulated NDS local-wireless session. The generated ARM7 fixture powers on both
   emulated Wi-Fi devices and reaches `MP_Begin`, while a separate adapter test
   sends a raw packet through upstream `LocalMP`; no guest program sends or
-  receives that packet. Retail/local-wireless compatibility remains unverified.
+  receives that packet. The user-run commercial session reached local wireless
+  but then hit the pre-fix worker deadline; retail/local-wireless compatibility
+  remains unverified.
 - Two simultaneous Libretro pointer indices have not yet been verified on the
   physical Deck/input-driver combination. The public-ABI automated test reaches
   two real melonDS TSC devices, but that does not establish hardware-driver
@@ -411,18 +453,21 @@ such error remains a potential desynchronization and should be investigated.
   real RetroArch process or on a physical Steam Deck.
 - NDS manual states, rewind, and runahead are unsupported. Users must disable
   rewind and runahead in the per-core override.
-- NDS reports 59.8260982880808 Hz; GB/GBC/GBA retain 59.7275 Hz. NDS timing and
-  performance have not been measured in a real frontend.
+- NDS reports 59.8260982880808 Hz; GB/GBC/GBA retain 59.7275 Hz. The failure
+  session supplied point-in-time CPU and memory telemetry, but NDS frame pacing
+  and performance have not been benchmarked or validated in a real frontend.
 - The NDS ten-second worker deadline is soft. It safely poisons a pair and waits
   for quiescence, but a permanently wedged upstream `NDS::RunFrame()` cannot be
-  cancelled and can still block `retro_run()` or unload indefinitely. Hard
-  bounding requires upstream cancellation support or process isolation.
+  cancelled and can still block `retro_run()` or unload indefinitely. Packet
+  send/receive callbacks now honor the abort and a poisoned pair logs only once
+  per failure episode, but hard bounding still requires upstream cancellation
+  support or process isolation.
 - The native sanitizer command exits successfully and has no ASan finding, but
   its log contains the 22 untouched-upstream UBSan diagnostics recorded above;
   this is not a clean UBSan pass.
-- Commercial games were used only for user-run startup/crash observation. No
-  commercial ROMs are stored in this repository, and no broad compatibility or
-  gameplay-completion claim is made.
+- Commercial games were used only for user-run startup, crash, save, and NDS
+  timeout observations. No commercial ROMs or saves are stored in this
+  repository, and no broad compatibility or gameplay-completion claim is made.
 - SameBoy's subsystem advertises distinct custom SaveRAM and RTC IDs for both
   slots, and the automated harness observes distinct pointers. Actual RetroArch
   disk persistence of both custom RTC IDs is still unverified. Use M3U for
@@ -445,5 +490,6 @@ The development host is macOS ARM64. Docker supplies both the pinned Debian
 `linux/amd64` release environment and a native Linux ARM64 sanitizer environment.
 Native host/container diagnostics do not replace a Linux x86-64 release suite.
 Neither a RetroArch executable nor Steam Deck hardware was available in the NDS
-implementation environment; the earlier physical Deck observation was a separate
-user-run pre-NDS test.
+implementation environment. The retail NDS timeout evidence above came from a
+separate user-run RetroArch/DRM session whose physical device was not established;
+the patched core has not been run there.

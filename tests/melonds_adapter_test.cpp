@@ -515,6 +515,159 @@ bool TestInstancesFramesInputAndTransport(
     return true;
 }
 
+bool TestIdleLocalMPPeerPollingDoesNotBlock(
+    const std::array<std::uint8_t, kRomSize> &first,
+    const std::array<std::uint8_t, kRomSize> &second)
+{
+    PairOwner owner;
+    char error[512]{};
+
+    CHECK(LoadPair(owner, first, second));
+    CHECK(owner.operations->set_link(owner.pair, true, error, sizeof(error)));
+    CHECK(dualboy_melonds_debug_set_mp_requested(owner.pair, 0U, true));
+    CHECK(dualboy_melonds_debug_set_mp_requested(owner.pair, 1U, true));
+    CHECK(owner.operations->link_transport_active(owner.pair));
+
+    void *const host = const_cast<void *>(
+        dualboy_melonds_debug_userdata(owner.pair, 0U));
+    void *const client = const_cast<void *>(
+        dualboy_melonds_debug_userdata(owner.pair, 1U));
+    CHECK(host != nullptr && client != nullptr);
+
+    std::array<std::uint8_t, 7U> sent{{
+        0x44U, 0x75U, 0x61U, 0x6cU, 0x42U, 0x6fU, 0x79U,
+    }};
+    std::array<std::uint8_t, 32U> received{};
+    std::uint64_t received_timestamp = 0U;
+    constexpr std::uint64_t timestamp = UINT64_C(0x123456789abcdef0);
+    CHECK(dualboy_melonds_platform::MPSendPacket(
+              sent.data(), static_cast<int>(sent.size()), timestamp, host) ==
+          static_cast<int>(sent.size()));
+    CHECK(dualboy_melonds_platform::MPRecvHostPacket(
+              received.data(), &received_timestamp, client) ==
+          static_cast<int>(sent.size()));
+    CHECK(received_timestamp == timestamp);
+    CHECK(std::equal(sent.begin(), sent.end(), received.begin()));
+
+    /* A LocalMP client that misses its expected host frame asks again on every
+     * 8-us emulated WiFi tick. At a DualBoy frame boundary the peer cannot
+     * produce another packet until the next outer frame, so repeated polls
+     * must not each spend melonDS's 25-ms receive timeout waiting. */
+    constexpr unsigned empty_polls = 20U;
+    const auto polling_started = std::chrono::steady_clock::now();
+    for (unsigned poll = 0U; poll < empty_polls; ++poll) {
+        CHECK(dualboy_melonds_platform::MPRecvHostPacket(
+                  received.data(), &received_timestamp, client) == 0);
+    }
+    const auto polling_elapsed = std::chrono::steady_clock::now() -
+                                 polling_started;
+    CHECK(polling_elapsed < std::chrono::milliseconds(250));
+
+    CHECK(dualboy_melonds_debug_set_frame_deadline_ms(owner.pair, 5000U));
+
+    /* Reproduce the asymmetric boundary behind the runtime stall: the client
+     * is still inside its dispatched frame while the host has finished and
+     * cannot send again until the next outer frame. Every empty poll must now
+     * be nonblocking even though this receiver has not spent its wait budget. */
+    const std::uint64_t host_frames_before =
+        dualboy_melonds_debug_completed_frames(owner.pair, 0U);
+    bool boundary_frame_result = false;
+    char boundary_frame_error[512]{};
+    CHECK(dualboy_melonds_debug_hold_next_frame(owner.pair, 1U));
+    std::thread boundary_runner([&]() {
+        boundary_frame_result = owner.operations->run_frame(
+            owner.pair, boundary_frame_error, sizeof(boundary_frame_error));
+    });
+
+    const bool client_held = dualboy_melonds_debug_wait_for_frame_hold(
+        owner.pair, 1U, 2000U);
+    bool host_at_boundary = false;
+    const auto boundary_wait_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (client_held &&
+           std::chrono::steady_clock::now() < boundary_wait_deadline) {
+        host_at_boundary =
+            dualboy_melonds_debug_completed_frames(owner.pair, 0U) >
+                host_frames_before &&
+            !dualboy_melonds_debug_worker_frame_active(owner.pair, 0U);
+        if (host_at_boundary) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    bool boundary_polls_empty = client_held && host_at_boundary;
+    std::chrono::steady_clock::duration boundary_polling_elapsed{};
+    if (boundary_polls_empty) {
+        const auto boundary_polling_started =
+            std::chrono::steady_clock::now();
+        for (unsigned poll = 0U; poll < empty_polls; ++poll) {
+            if (dualboy_melonds_platform::MPRecvHostPacket(
+                    received.data(), &received_timestamp, client) != 0) {
+                boundary_polls_empty = false;
+                break;
+            }
+        }
+        boundary_polling_elapsed = std::chrono::steady_clock::now() -
+                                   boundary_polling_started;
+    }
+    const bool client_released =
+        dualboy_melonds_debug_release_frame_hold(owner.pair, 1U);
+    boundary_runner.join();
+
+    CHECK(client_held);
+    CHECK(host_at_boundary);
+    CHECK(client_released);
+    CHECK(boundary_polls_empty);
+    CHECK(boundary_polling_elapsed < std::chrono::milliseconds(250));
+    CHECK(boundary_frame_result);
+
+    /* With both workers dispatched but paused at their deterministic boundary,
+     * exactly one empty receive may retain upstream's scheduling wait. Run the
+     * scenario twice: the second wait proves each outer-frame dispatch resets
+     * the receiver's independent budget. */
+    for (unsigned round = 0U; round < 2U; ++round) {
+        bool frame_result = false;
+        char frame_error[512]{};
+        CHECK(dualboy_melonds_debug_hold_next_frame(owner.pair, 0U));
+        CHECK(dualboy_melonds_debug_hold_next_frame(owner.pair, 1U));
+        std::thread runner([&]() {
+            frame_result = owner.operations->run_frame(
+                owner.pair, frame_error, sizeof(frame_error));
+        });
+
+        const bool first_held = dualboy_melonds_debug_wait_for_frame_hold(
+            owner.pair, 0U, 2000U);
+        const bool second_held = dualboy_melonds_debug_wait_for_frame_hold(
+            owner.pair, 1U, 2000U);
+        bool active_polls_empty = first_held && second_held;
+        std::chrono::steady_clock::duration active_polling_elapsed{};
+        if (active_polls_empty) {
+            const auto active_polling_started =
+                std::chrono::steady_clock::now();
+            for (unsigned poll = 0U; poll < empty_polls; ++poll) {
+                if (dualboy_melonds_platform::MPRecvHostPacket(
+                        received.data(), &received_timestamp, client) != 0) {
+                    active_polls_empty = false;
+                    break;
+                }
+            }
+            active_polling_elapsed = std::chrono::steady_clock::now() -
+                                     active_polling_started;
+        }
+        const bool first_released =
+            dualboy_melonds_debug_release_frame_hold(owner.pair, 0U);
+        const bool second_released =
+            dualboy_melonds_debug_release_frame_hold(owner.pair, 1U);
+        runner.join();
+
+        CHECK(first_held && second_held);
+        CHECK(first_released && second_released);
+        CHECK(active_polls_empty);
+        CHECK(active_polling_elapsed >= std::chrono::milliseconds(10));
+        CHECK(active_polling_elapsed < std::chrono::milliseconds(250));
+        CHECK(frame_result);
+    }
+    return true;
+}
+
 bool TestPartialAndRepeatedCleanup(
     const std::array<std::uint8_t, kRomSize> &rom)
 {
@@ -594,8 +747,36 @@ bool TestWorkerDeadlineQuiescesBeforeReturning(
     std::atomic<bool> frame_returned{false};
 
     CHECK(LoadPair(owner, first, second));
+    CHECK(owner.operations->set_link(owner.pair, true, frame_error,
+                                     sizeof(frame_error)));
+    CHECK(dualboy_melonds_debug_set_mp_requested(owner.pair, 0U, true));
+    CHECK(dualboy_melonds_debug_set_mp_requested(owner.pair, 1U, true));
+    CHECK(dualboy_melonds_debug_registration_mask(owner.pair) == 0x03U);
+    void *const host = const_cast<void *>(
+        dualboy_melonds_debug_userdata(owner.pair, 0U));
+    void *const client = const_cast<void *>(
+        dualboy_melonds_debug_userdata(owner.pair, 1U));
+    CHECK(host != nullptr && client != nullptr);
+
+    std::array<std::uint8_t, 1U> packet{{0x5aU}};
+    std::array<std::uint8_t, 1024U> received{};
+    std::uint64_t received_timestamp = 0U;
+    constexpr std::uint64_t packet_timestamp = 64U;
+    CHECK(dualboy_melonds_platform::MPSendPacket(
+              packet.data(), static_cast<int>(packet.size()), packet_timestamp,
+              host) == static_cast<int>(packet.size()));
+    CHECK(dualboy_melonds_platform::MPSendCmd(
+              packet.data(), static_cast<int>(packet.size()), packet_timestamp,
+              host) == static_cast<int>(packet.size()));
+    CHECK(dualboy_melonds_platform::MPSendCmd(
+              packet.data(), static_cast<int>(packet.size()), packet_timestamp,
+              client) == static_cast<int>(packet.size()));
+    CHECK(dualboy_melonds_platform::MPSendReply(
+              packet.data(), static_cast<int>(packet.size()), packet_timestamp,
+              1U, host) == static_cast<int>(packet.size()));
+
     CHECK(dualboy_melonds_debug_set_frame_deadline_ms(owner.pair, 25U));
-    CHECK(dualboy_melonds_debug_hold_next_frame(owner.pair, 0U));
+    CHECK(dualboy_melonds_debug_hold_next_frame(owner.pair, 1U));
 
     std::thread runner([&]() {
         frame_result = owner.operations->run_frame(owner.pair, frame_error,
@@ -609,8 +790,45 @@ bool TestWorkerDeadlineQuiescesBeforeReturning(
         dualboy_melonds_debug_wait_for_frame_timeout(owner.pair, 2000U);
     const bool returned_at_deadline =
         frame_returned.load(std::memory_order_acquire);
+    int send_packet_after_abort = -1;
+    int receive_packet_after_abort = -1;
+    int send_command_after_abort = -1;
+    int send_reply_after_abort = -1;
+    int send_ack_after_abort = -1;
+    int receive_host_after_abort = -1;
+    std::uint16_t receive_replies_after_abort = UINT16_MAX;
+    std::uint8_t registration_after_end = UINT8_MAX;
+    std::uint8_t registration_after_begin = UINT8_MAX;
+    if (observed_timeout) {
+        receive_packet_after_abort = dualboy_melonds_platform::MPRecvPacket(
+            received.data(), &received_timestamp, client);
+        receive_host_after_abort =
+            dualboy_melonds_platform::MPRecvHostPacket(
+                received.data(), &received_timestamp, client);
+        receive_replies_after_abort =
+            dualboy_melonds_platform::MPRecvReplies(
+                received.data(), packet_timestamp, 0x0002U, client);
+        send_packet_after_abort = dualboy_melonds_platform::MPSendPacket(
+            packet.data(), static_cast<int>(packet.size()), packet_timestamp,
+            client);
+        send_command_after_abort = dualboy_melonds_platform::MPSendCmd(
+            packet.data(), static_cast<int>(packet.size()), packet_timestamp,
+            client);
+        send_reply_after_abort = dualboy_melonds_platform::MPSendReply(
+            packet.data(), static_cast<int>(packet.size()), packet_timestamp,
+            1U, client);
+        send_ack_after_abort = dualboy_melonds_platform::MPSendAck(
+            packet.data(), static_cast<int>(packet.size()), packet_timestamp,
+            client);
+        dualboy_melonds_platform::MPEnd(client);
+        registration_after_end =
+            dualboy_melonds_debug_registration_mask(owner.pair);
+        dualboy_melonds_platform::MPBegin(client);
+        registration_after_begin =
+            dualboy_melonds_debug_registration_mask(owner.pair);
+    }
     const bool released =
-        dualboy_melonds_debug_release_frame_hold(owner.pair, 0U);
+        dualboy_melonds_debug_release_frame_hold(owner.pair, 1U);
     runner.join();
 
     CHECK(observed_timeout);
@@ -618,8 +836,18 @@ bool TestWorkerDeadlineQuiescesBeforeReturning(
     CHECK(released);
     CHECK(frame_returned.load(std::memory_order_acquire));
     CHECK(!frame_result);
+    CHECK(receive_packet_after_abort == 0);
+    CHECK(receive_host_after_abort == 0);
+    CHECK(receive_replies_after_abort == 0U);
+    CHECK(send_packet_after_abort == 0);
+    CHECK(send_command_after_abort == 0);
+    CHECK(send_reply_after_abort == 0);
+    CHECK(send_ack_after_abort == 0);
+    CHECK(registration_after_end == 0x01U);
+    CHECK(registration_after_begin == 0x01U);
     CHECK(std::strstr(frame_error, "timed out") != nullptr);
     CHECK(dualboy_melonds_debug_is_frame_poisoned(owner.pair));
+    CHECK(dualboy_melonds_debug_registration_mask(owner.pair) == 0U);
     CHECK(!owner.operations->link_transport_active(owner.pair));
 
     /* The false return is a quiescence boundary: engine-owned memory and audio
@@ -1226,6 +1454,7 @@ int main()
         second_detection.platform != DUALBOY_PLATFORM_NDS ||
         !TestRendererAndLocalMPExclusivity(first, second) ||
         !TestInstancesFramesInputAndTransport(first, second) ||
+        !TestIdleLocalMPPeerPollingDoesNotBlock(first, second) ||
         !TestPartialAndRepeatedCleanup(first) ||
         !TestGeneratedFirmwareValidation(first, second) ||
         !TestWorkerDeadlineQuiescesBeforeReturning(first, second) ||

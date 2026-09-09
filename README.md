@@ -1,25 +1,26 @@
 # DualBoy
 
-DualBoy is one Libretro core that runs exactly two Game Boy, Game Boy Color,
-Game Boy Advance, or Nintendo DS machines in one RetroArch session. GB/GBC uses
-two SameBoy instances. GBA uses two mGBA instances and the cooperative SIO
-lockstep implementation adapted from libretro/mgba PR #318. NDS uses two
-upstream melonDS instances and upstream same-process `LocalMP` for local
-wireless. DualBoy does not load another Libretro core.
+DualBoy is one Libretro core that runs exactly two systems in one RetroArch
+session:  
 
-The MVP supports one cartridge duplicated into both machines, the two-content
-`dualboylink` subsystem, and local two-entry M3U playlists. It provides paired
-video, five selectable RetroPad source ports for two emulated players,
-one-machine audio, and independent battery saves.
-GB/GBC/GBA also provide one transactional save-state containing both machines
-and their link state. NDS manual states, rewind, and runahead are unavailable
-because upstream `LocalMP` queues cannot be restored transactionally.
+- Game Boy / Game Boy Color via SameBoy  
+- Game Boy Advance via mGBA  
+- Nintendo DS via melonDS  
 
-This is an integration-stage project. Automated tests use source-generated ROMs
-and no commercial ROMs or Nintendo BIOS/firmware are included. Earlier GBA work
-has been launched through RetroArch on a physical Steam Deck; NDS local wireless,
-touch behavior, performance, and compatibility have separate verification
-boundaries. See [implementation status](docs/status.md) for the exact evidence.
+It combines all three emulation engines with project-specific coordination and
+UI glue to provide split-screen local multiplayer (side-by-side or top/bottom),
+paired link handling, controller assignment, and save routing in a single core.
+
+Current behavior is **experimental** and intentionally limited to local
+two-player workflows (duplicate ROM mode, the `dualboylink` subsystem, or
+two-entry M3U). It includes no nested core loading and no official claims about
+online compatibility beyond local local-multiplayer features.
+
+The project is validated with source-generated ROM fixtures and does not include
+commercial ROMs, BIOS files, firmware, user saves, or private artifacts.
+
+See [implementation status](docs/status.md) for precise current evidence and
+known limitations.
 
 ## Build
 
@@ -253,8 +254,8 @@ from system-package paths; detailed discovery, installation, controller, and
 backup guidance is in [Steam Deck setup](docs/steam-deck.md).
 
 The general Steam Deck installation procedure has been exercised with the prior
-GBA core. NDS local wireless, multitouch behavior, performance, suspend/resume,
-and save reliability have not yet been established on Deck hardware.
+GBA core. This core is only tested on Steam Deck at present; broader platform
+coverage is explicitly tracked as a future task.
 
 ## Scope and licenses
 
@@ -263,7 +264,7 @@ LAN netplay, RetroArch netplay, real-DS connectivity, Download Play, DSi, or
 Slot-2 support. Fast-forward remains frontend-controlled while NDS transport is
 inactive and is dynamically inhibited only after both emulated consoles have
 joined `LocalMP`. There is no rewind/runahead support for NDS or machine-1 audio
-mixer. Core cheat entrypoints are no-ops.
+output. Core cheat entrypoints are no-ops.
 
 DualBoy-authored source remains MPL-2.0. SameBoy is Expat-licensed, mGBA and the
 PR-derived adaptation are MPL-2.0, and the Libretro API header carries an MIT
